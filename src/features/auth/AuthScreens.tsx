@@ -47,7 +47,7 @@ export function WelcomeScreen() {
         <div className="w-full lg:w-[45%] flex flex-col items-center lg:items-start text-center lg:text-left z-20">
           
           <h1 className="text-[36px] md:text-[42px] lg:text-[48px] xl:text-[54px] leading-[1.1] font-extrabold text-slate-900 tracking-tight mb-4 lg:mb-6 mt-2 lg:mt-4">
-            Get trusted help, <br className="hidden md:block" />right when you need it.
+            Get trusted service, <br className="hidden md:block" />right when you need it.
           </h1>
           <p className="text-lg md:text-xl text-gray-500 font-medium mb-10 max-w-sm md:max-w-none">
             Help is always near.

@@ -93,7 +93,7 @@ export function UserHome() {
         <div className="flex flex-col md:flex-row items-center gap-8 py-4 pb-8">
            <div className="flex-1 space-y-4 text-center md:text-left">
              <h2 className="text-3xl md:text-5xl font-extrabold leading-tight text-gray-900 drop-shadow-sm">
-               Get trusted help, <br className="hidden md:block" />right when you need it.
+               Get trusted service, <br className="hidden md:block" />right when you need it.
              </h2>
              <p className="text-gray-500 text-base md:text-lg max-w-md mx-auto md:mx-0 font-medium">
                Find verified local professionals for everyday tasks, track them live, and pay securely.
