@@ -1,0 +1,39 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Poppins', system-ui, sans-serif;
+  
+  --color-brand-orange: #FF6B2C;
+  --color-brand-orange-hover: #E85A1F;
+  --color-brand-orange-light: #FFF0E9;
+  
+  --color-brand-teal: #01B9C1;
+  --color-brand-teal-hover: #01A3AA;
+  --color-brand-teal-light: #E0F7F8;
+  
+  --color-surface: #F9FAFB;
+  --color-surface-card: #FFFFFF;
+}
+
+@layer base {
+  body {
+    @apply font-sans bg-surface text-gray-900 antialiased;
+  }
+}
+
+/* Custom scrollbar for desktop admin panel */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent; 
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1; 
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8; 
+}

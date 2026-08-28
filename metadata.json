@@ -1,0 +1,6 @@
+{
+  "name": "Qareeb",
+  "description": "Two-sided local help marketplace in Pakistan connecting users with verified helpers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
