@@ -8,7 +8,6 @@ import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore } from '../../store/useAppStore';
-import heroImg from '../../assets/images/qareeb_hero_no_text_1787392274026.jpg';
 import { Wrench, Calendar, Camera, Box, Lock, Zap, Droplets, Paintbrush, Truck, MapPin, Search, Star, Clock, ArrowRight, ShieldCheck, Phone, CheckCircle2, Menu, Bell, Home, PlayCircle, ClipboardList, CheckCircle, FileText, User, ShoppingBag, Heart, Tent, Scissors, Plus, ChevronRight, BookOpen, MonitorSmartphone, UserRoundCheck, Edit2, Tag } from 'lucide-react';
 import { SERVICE_CATEGORIES, DEMO_HELPERS, DIGITAL_PAYMENT_THRESHOLD } from '../../config/businessLogic';
 
@@ -105,9 +104,9 @@ export function UserHome() {
              </div>
            </div>
            
-           <div className="flex-1 w-full max-w-md mx-auto md:mx-0">
-             <div className="relative w-full aspect-[3/4] md:aspect-square lg:aspect-[4/5] bg-[#EAF5F5] rounded-[32px] shadow-2xl overflow-hidden border-[6px] border-white transition-all duration-500 ease-out hover:shadow-3xl hover:-translate-y-2">
-               <img src={heroImg} className="absolute inset-0 w-full h-full object-cover object-top transition-transform duration-700 ease-out hover:scale-105" alt="Qareeb Helper" />
+           <div className="flex-1 w-[85%] max-w-[340px] md:max-w-[400px] mx-auto md:ml-auto md:mr-4 lg:mr-8 flex items-center justify-center">
+             <div className="relative w-full aspect-square bg-[#EAF5F5] rounded-full shadow-2xl overflow-hidden border-[6px] border-white transition-all duration-500 ease-out hover:shadow-3xl hover:-translate-y-2">
+               <img src="https://images.unsplash.com/photo-1621905251189-08b45d6a269e?q=80&w=800&auto=format&fit=crop" className="absolute inset-0 w-full h-full object-cover object-center transition-transform duration-700 ease-out hover:scale-105" alt="" />
              </div>
            </div>
         </div>

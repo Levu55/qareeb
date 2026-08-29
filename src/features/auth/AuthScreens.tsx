@@ -5,13 +5,11 @@ import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore } from '../../store/useAppStore';
-import heroImg from '../../assets/images/qareeb_hero_no_text_1787392274026.jpg';
 import { Phone, Lock, Star, Globe, Camera, Upload, CheckCircle2, User, Gift, Eye, EyeOff, ShieldCheck, ArrowRight, ChevronDown, Instagram, Youtube } from 'lucide-react';
 
 const LogoHeader = () => (
   <div className="flex flex-col items-center lg:items-start justify-center py-4">
     <QareebLogo className="h-20 w-auto" />
-    <span className="text-xs text-gray-500 font-medium mt-1 -mt-1">Help is near you.</span>
   </div>
 );
 
@@ -100,12 +98,12 @@ export function WelcomeScreen() {
         </div>
         
         {/* Right Column (45%) */}
-        <div className="w-full lg:w-[45%] flex items-center justify-center relative z-10 mt-8 lg:mt-0 pb-12 lg:pb-0">
-          <div className="relative w-full max-w-[500px] aspect-[4/5] bg-brand-teal/5 rounded-[32px] shadow-2xl overflow-hidden border-[6px] lg:border-[8px] border-white">
+        <div className="w-full lg:w-[45%] flex items-center justify-center relative z-10 mt-8 lg:mt-0 pb-12 lg:pb-0 px-4">
+          <div className="relative w-[85%] max-w-[380px] md:max-w-[440px] aspect-square bg-brand-teal/5 rounded-full shadow-2xl overflow-hidden border-[6px] lg:border-[8px] border-white">
             <img 
-              src={heroImg} 
-              alt="Qareeb Helper" 
-              className="absolute inset-0 w-full h-full object-cover object-top"
+              src="https://images.unsplash.com/photo-1621905251189-08b45d6a269e?q=80&w=800&auto=format&fit=crop" 
+              alt="" 
+              className="absolute inset-0 w-full h-full object-cover object-center"
             />
           </div>
         </div>
