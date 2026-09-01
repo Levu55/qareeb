@@ -49,7 +49,7 @@ export function AdminDisputesScreen() {
              <div className="flex gap-2">
                 <Button className="flex-1 bg-gray-900 text-white hover:bg-gray-800"><MessageSquare className="w-4 h-4 me-2"/> Message Parties</Button>
                 <Button variant="outline" className="flex-1 text-red-600 border-red-200 hover:bg-red-50"><AlertTriangle className="w-4 h-4 me-2"/> Strike Helper</Button>
-                <Button className="flex-1 bg-brand-teal hover:bg-brand-teal-hover">Resolve & Close</Button>
+                <Button className="flex-1 bg-brand-orange hover:bg-brand-orange-hover">Resolve & Close</Button>
              </div>
           </Card>
         </div>

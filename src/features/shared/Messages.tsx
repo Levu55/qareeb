@@ -95,7 +95,7 @@ export function MessagesScreen() {
             <button 
               type="submit"
               disabled={!replyText.trim()}
-              className="w-12 h-12 bg-brand-teal text-white rounded-full flex items-center justify-center flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-teal-600 transition-colors"
+              className="w-12 h-12 bg-brand-orange text-white rounded-full flex items-center justify-center flex-shrink-0 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-brand-orange-hover transition-colors"
             >
               <Send className="w-5 h-5 ml-1" />
             </button>

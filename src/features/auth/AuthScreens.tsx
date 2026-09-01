@@ -47,9 +47,6 @@ export function WelcomeScreen() {
           <h1 className="text-[36px] md:text-[42px] lg:text-[48px] xl:text-[54px] leading-[1.1] font-extrabold text-slate-900 tracking-tight mb-4 lg:mb-6 mt-2 lg:mt-4">
             Get trusted service, <br className="hidden md:block" />right when you need it.
           </h1>
-          <p className="text-lg md:text-xl text-gray-500 font-medium mb-10 max-w-sm md:max-w-none">
-            Help is always near.
-          </p>
           
           <Button 
             className="w-full sm:w-[240px] h-[50px] bg-brand-orange hover:bg-orange-500 text-white rounded-xl font-bold text-base shadow-md shadow-brand-orange/20 transition-all hover:-translate-y-0.5 mb-6 shrink-0" 

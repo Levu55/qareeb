@@ -235,7 +235,7 @@ export function AdminCNICQueue() {
 
             <div className="mt-auto flex justify-end space-x-4 border-t border-gray-100 pt-6">
                <Button variant="danger" className="w-32 bg-white text-red-600 border-2 border-red-200 hover:bg-red-50">Reject</Button>
-               <Button className="w-40 bg-brand-teal hover:bg-brand-teal-hover"><CheckCircle className="w-5 h-5 me-2" /> Approve</Button>
+               <Button className="w-40 bg-brand-orange hover:bg-brand-orange-hover"><CheckCircle className="w-5 h-5 me-2" /> Approve</Button>
             </div>
           </Card>
         ) : (

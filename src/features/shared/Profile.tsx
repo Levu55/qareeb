@@ -158,7 +158,7 @@ export function PersonalDetailsScreen() {
             <div className="flex flex-col items-center mb-6">
               <div className="relative">
                 <img src={`https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'Waleed')}&background=FF6B2C&color=fff`} className="w-24 h-24 rounded-full shadow-sm border border-gray-100" />
-                <button className="absolute bottom-0 right-0 p-1.5 bg-brand-teal text-white rounded-full shadow-md border-2 border-white hover:bg-teal-600 transition-colors">
+                <button className="absolute bottom-0 right-0 p-1.5 bg-brand-orange text-white rounded-full shadow-md border-2 border-white hover:bg-brand-orange-hover transition-colors">
                   <SwitchCamera className="w-4 h-4" />
                 </button>
               </div>
