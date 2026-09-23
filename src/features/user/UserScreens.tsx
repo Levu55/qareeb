@@ -482,7 +482,8 @@ export function SelectHelperScreen() {
   const [selectedHelper, setSelectedHelper] = useState<any>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [showCNIC, setShowCNIC] = useState(false);
-  const [cnicVerified, setCnicVerified] = useState(false);
+  const cnicStatus = useAppStore(state => state.cnicStatus);
+  const isVerified = cnicStatus === 'approved';
   
   const category = localStorage.getItem('qareeb_selected_category') || '';
   const isFemaleOnly = localStorage.getItem('qareeb_female_only') === 'true';
@@ -492,7 +493,7 @@ export function SelectHelperScreen() {
   );
 
   const handleConfirmBooking = () => {
-    if (!cnicVerified) {
+    if (!isVerified) {
       setShowCNIC(true);
       return;
     }
@@ -511,22 +512,37 @@ export function SelectHelperScreen() {
         </div>
         
         <div className="flex-1 p-6 max-w-md mx-auto w-full flex flex-col pt-12">
-          {!cnicVerified ? (
+          {cnicStatus === 'pending' ? (
+            <div className="text-center animate-in zoom-in duration-500">
+              <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Clock className="w-10 h-10 text-brand-orange" />
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Verification Under Review</h2>
+              <p className="text-gray-500 font-medium mb-8">
+                Your CNIC documents have been submitted and are under review by our team. You can confirm your booking as soon as verification is approved.
+              </p>
+              <Button variant="outline" className="w-full" onClick={() => setShowCNIC(false)}>
+                Back to Helpers
+              </Button>
+            </div>
+          ) : !isVerified ? (
             <>
               <div className="text-center mb-8">
                 <div className="w-20 h-20 bg-brand-teal/10 rounded-full flex items-center justify-center mx-auto mb-4">
                   <ShieldCheck className="w-10 h-10 text-brand-teal" />
                 </div>
                 <h2 className="text-2xl font-bold text-gray-900 mb-2">Verify your Identity</h2>
-                <p className="text-gray-500 font-medium">Please verify your identity before confirming your booking to ensure safety for everyone.</p>
+                <p className="text-gray-500 font-medium">
+                  Please verify your CNIC before confirming your booking to ensure safety and trust for both customers and helpers.
+                </p>
               </div>
 
               <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm mb-8 text-center">
-                <p className="text-sm font-bold text-gray-600 mb-4">Demo Verification Mode</p>
-                <Button className="w-full mb-3" onClick={() => {
-                  setCnicVerified(true);
-                }}>
-                  Simulate Verification Success
+                <p className="text-sm text-gray-600 mb-6 font-medium">
+                  Upload your original Pakistani CNIC (Front, Back, and a quick Selfie) for fast approval.
+                </p>
+                <Button className="w-full h-12 text-base font-bold shadow-md shadow-brand-orange/20" onClick={() => navigate('/auth/cnic-verification')}>
+                  Complete CNIC Verification
                 </Button>
               </div>
             </>
@@ -539,6 +555,7 @@ export function SelectHelperScreen() {
                <p className="text-gray-500 font-medium mb-10">Your CNIC has been verified successfully.</p>
                <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={() => {
                  setShowCNIC(false);
+                 handleConfirmBooking();
                }}>
                  Continue to Booking
                </Button>

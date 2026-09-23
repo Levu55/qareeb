@@ -23,6 +23,8 @@ import { useLocation } from 'react-router-dom';
 
 import { ServicesScreen } from './components/ServicesScreen';
 import { ToastContainer } from './components/ToastContainer';
+import { supabase } from './lib/supabaseClient';
+import { Role } from './store/useAppStore';
 
 function RootRedirect() {
   const { role } = useAppStore();
@@ -61,6 +63,51 @@ export default function App() {
     document.documentElement.dir = language === 'ur' ? 'rtl' : 'ltr';
     document.documentElement.lang = language;
   }, [language]);
+
+  // Restore and maintain Supabase authentication session
+  useEffect(() => {
+    const syncSession = async (user: any, session: any) => {
+      if (!user) return;
+      try {
+        // Query Profiles table using exact Phase 1 column name 'ID'
+        const { data: profile } = await supabase
+          .from('Profiles')
+          .select('ID, Phone, Role')
+          .eq('ID', user.id)
+          .maybeSingle();
+
+        const userRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
+        const fullName = user.user_metadata?.full_name || '';
+        const userPhone = profile?.Phone || user.phone || '';
+        const cnicStatus = user.user_metadata?.cnic_status || 'unverified';
+
+        useAppStore.getState().login(userRole, fullName, userPhone, user, session);
+        useAppStore.getState().setCnicStatus(cnicStatus);
+      } catch (e) {
+        console.warn('Session profile restoration warning:', e);
+      }
+    };
+
+    // Initial session check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        syncSession(session.user, session);
+      }
+    });
+
+    // Real-time auth listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        syncSession(session.user, session);
+      } else if (event === 'SIGNED_OUT') {
+        useAppStore.getState().logout();
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   return (
     <>

@@ -26,6 +26,10 @@ interface AppState {
   language: Language;
   walletBalance: number;
   userName: string;
+  phone: string;
+  user: any | null;
+  session: any | null;
+  cnicStatus: 'unverified' | 'pending' | 'approved' | 'rejected';
   isHelper: boolean;
   helperServices: string[];
   tasks: Task[];
@@ -33,7 +37,9 @@ interface AppState {
   setRole: (role: Role) => void;
   setLanguage: (lang: Language) => void;
   setWalletBalance: (balance: number) => void;
-  login: (role: Role, name: string) => void;
+  setCnicStatus: (status: 'unverified' | 'pending' | 'approved' | 'rejected') => void;
+  setUser: (user: any, session?: any) => void;
+  login: (role: Role, name: string, phone?: string, user?: any, session?: any) => void;
   logout: () => void;
   registerAsHelper: (services?: string[]) => void;
   switchRole: (role: Role) => void;
@@ -50,6 +56,10 @@ export const useAppStore = create<AppState>()(
       language: 'en',
       walletBalance: 1250,
       userName: '',
+      phone: '',
+      user: null,
+      session: null,
+      cnicStatus: 'unverified',
       isHelper: false,
       helperServices: [],
       tasks: [],
@@ -57,8 +67,31 @@ export const useAppStore = create<AppState>()(
       setRole: (role) => set({ role }),
       setLanguage: (language) => set({ language }),
       setWalletBalance: (walletBalance) => set({ walletBalance }),
-      login: (role, userName) => set((state) => ({ role, userName, isHelper: role === 'helper' ? true : state.isHelper })),
-      logout: () => set({ role: 'guest', userName: '', walletBalance: 0 }),
+      setCnicStatus: (cnicStatus) => set({ cnicStatus }),
+      setUser: (user, session = null) => set((state) => ({
+        user,
+        session,
+        userName: user?.user_metadata?.full_name || state.userName,
+        phone: user?.phone || user?.user_metadata?.phone || state.phone,
+        cnicStatus: user?.user_metadata?.cnic_status || state.cnicStatus,
+      })),
+      login: (role, userName, phone = '', user = null, session = null) => set((state) => ({
+        role,
+        userName,
+        phone: phone || user?.phone || state.phone,
+        user: user || state.user,
+        session: session || state.session,
+        isHelper: role === 'helper' ? true : state.isHelper,
+      })),
+      logout: () => set({
+        role: 'guest',
+        userName: '',
+        phone: '',
+        user: null,
+        session: null,
+        cnicStatus: 'unverified',
+        walletBalance: 0,
+      }),
       registerAsHelper: (services = []) => set({ isHelper: true, role: 'helper', helperServices: services }),
       switchRole: (role) => set({ role }),
       postTask: (taskData) => set((state) => ({

@@ -6,6 +6,8 @@ import { LogOut, User, Shield, CreditCard, CircleHelp, SwitchCamera, AlertTriang
 import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
 
+import { supabase } from '../../lib/supabaseClient';
+
 export function ProfileScreen() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
   const addToast = useAppStore(state => state.addToast);
@@ -49,10 +51,20 @@ export function ProfileScreen() {
     }
   };
 
-  const { role, logout, login, userName, isHelper, switchRole } = useAppStore();
+  const { role, logout, userName, isHelper, switchRole } = useAppStore();
   const navigate = useNavigate();
   
-  const displayName = userName || 'Waleed Ahmed'; // Fallback if somehow empty
+  const displayName = userName || 'User';
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn('Supabase signOut error:', err);
+    }
+    logout();
+    navigate('/auth');
+  };
 
   const handleSwitchRole = () => {
     if (role === 'user') {
@@ -127,7 +139,7 @@ export function ProfileScreen() {
            Switch to {role === 'user' ? 'Helper Mode' : 'User Mode'}
          </button>
 
-         <button onClick={logout} className="w-full mt-2 bg-red-50 p-4 rounded-2xl flex items-center justify-center text-red-500 font-bold shadow-sm active:scale-[0.98] transition-transform">
+         <button onClick={handleLogout} className="w-full mt-2 bg-red-50 p-4 rounded-2xl flex items-center justify-center text-red-500 font-bold shadow-sm active:scale-[0.98] transition-transform">
            <LogOut className="w-5 h-5 me-2" />
            Logout
          </button>
@@ -139,10 +151,10 @@ export function ProfileScreen() {
 
 export function PersonalDetailsScreen() {
   const navigate = useNavigate();
-  const { userName, role } = useAppStore();
-  const [name, setName] = useState(userName || 'Waleed Ahmed');
-  const [email, setEmail] = useState('waleed@example.com');
-  const [phone, setPhone] = useState('0300 1234567');
+  const { userName, phone: userPhone, user } = useAppStore();
+  const [name, setName] = useState(userName || '');
+  const [email, setEmail] = useState(user?.email || '');
+  const [phone, setPhone] = useState(userPhone || user?.phone || '');
   
   return (
     <div className="flex-1 bg-gray-50 flex flex-col h-full overflow-y-auto">

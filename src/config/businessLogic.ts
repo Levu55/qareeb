@@ -1,5 +1,3 @@
-export const DEMO_OTP = '123456';
-export const DEMO_REFERRAL = 'QAREEB2026';
 export const DIGITAL_PAYMENT_THRESHOLD = 1500;
 
 export type ServiceCategoryId = string;
