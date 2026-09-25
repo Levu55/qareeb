@@ -327,10 +327,15 @@ export function LoginScreen() {
           data: { referral_code: referralCode },
         });
       }
-      await syncUserProfile(currentUser.id, normalizedPhone, selectedRole, {
+      const sync = await syncUserProfile(currentUser.id, normalizedPhone, selectedRole, {
         full_name: name.trim(),
         referral_code: referralCode,
       });
+      if (!sync.success) {
+        setIsLoading(false);
+        setErrors({ referral: 'We could not save your profile. Please try again.' });
+        return;
+      }
       login(selectedRole, name.trim() || 'User', normalizedPhone, currentUser, session);
 
       setIsLoading(false);

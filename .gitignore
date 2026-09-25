@@ -27,3 +27,7 @@ Thumbs.db
 
 # Local tooling
 *.local
+
+# Supabase CLI local state (linked project metadata, branches)
+supabase/.temp/
+supabase/.branches/

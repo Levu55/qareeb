@@ -87,7 +87,8 @@ export function getCnicStatus(user: any): CnicStatus {
 
 /**
  * Synchronizes the authenticated user record with the existing Phase 1 database schema.
- * Respects exact existing column names: Profiles (ID, Phone, Role) and Helpers (ID, Rating).
+ * Respects exact existing column names: Profiles (ID, Full-name, Phone, Role) and Helpers (ID, Rating).
+ * "Full-name" is NOT NULL in the Profiles table, so it must be sent on every upsert.
  */
 export async function syncUserProfile(
   userId: string,
@@ -100,12 +101,14 @@ export async function syncUserProfile(
       .from('Profiles')
       .upsert({
         ID: userId,
+        'Full-name': metadata?.full_name?.trim() || '',
         Phone: phone,
         Role: role,
       }, { onConflict: 'ID' });
 
     if (profileError) {
-      console.warn('Profiles upsert warning:', profileError.message);
+      console.error('Profiles upsert failed:', profileError.message);
+      return { success: false, error: profileError.message };
     }
 
     if (role === 'helper') {
@@ -117,7 +120,8 @@ export async function syncUserProfile(
         }, { onConflict: 'ID' });
 
       if (helperError) {
-        console.warn('Helpers upsert warning:', helperError.message);
+        console.error('Helpers upsert failed:', helperError.message);
+        return { success: false, error: helperError.message };
       }
     }
 
