@@ -1,5 +1,5 @@
 import { supabase } from './supabaseClient';
-import { Role } from '../store/useAppStore';
+import type { Role } from '../store/useAppStore';
 
 /**
  * Normalizes user-inputted phone numbers to standard E.164 format.
@@ -67,6 +67,22 @@ export function getFriendlyAuthErrorMessage(error: any): string {
   }
 
   return msg || 'Authentication request failed. Please check your connection.';
+}
+
+export type CnicStatus = 'unverified' | 'pending' | 'approved' | 'rejected';
+
+/**
+ * Resolves CNIC verification status from a Supabase user.
+ * Approval/rejection is only trusted from app_metadata, which users cannot modify
+ * (set server-side by an admin/service role). user_metadata is user-writable, so it
+ * can only signal that documents were submitted ('pending').
+ */
+export function getCnicStatus(user: any): CnicStatus {
+  const reviewed = user?.app_metadata?.cnic_status;
+  if (reviewed === 'approved' || reviewed === 'rejected') {
+    return reviewed;
+  }
+  return user?.user_metadata?.cnic_status === 'pending' ? 'pending' : 'unverified';
 }
 
 /**

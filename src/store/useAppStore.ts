@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getCnicStatus, type CnicStatus } from '../lib/authHelpers';
 
 export type Role = 'guest' | 'user' | 'helper' | 'admin' | 'superadmin';
 export type Language = 'en' | 'ur';
@@ -29,7 +30,7 @@ interface AppState {
   phone: string;
   user: any | null;
   session: any | null;
-  cnicStatus: 'unverified' | 'pending' | 'approved' | 'rejected';
+  cnicStatus: CnicStatus;
   isHelper: boolean;
   helperServices: string[];
   tasks: Task[];
@@ -37,7 +38,7 @@ interface AppState {
   setRole: (role: Role) => void;
   setLanguage: (lang: Language) => void;
   setWalletBalance: (balance: number) => void;
-  setCnicStatus: (status: 'unverified' | 'pending' | 'approved' | 'rejected') => void;
+  setCnicStatus: (status: CnicStatus) => void;
   setUser: (user: any, session?: any) => void;
   login: (role: Role, name: string, phone?: string, user?: any, session?: any) => void;
   logout: () => void;
@@ -73,7 +74,7 @@ export const useAppStore = create<AppState>()(
         session,
         userName: user?.user_metadata?.full_name || state.userName,
         phone: user?.phone || user?.user_metadata?.phone || state.phone,
-        cnicStatus: user?.user_metadata?.cnic_status || state.cnicStatus,
+        cnicStatus: user ? getCnicStatus(user) : state.cnicStatus,
       })),
       login: (role, userName, phone = '', user = null, session = null) => set((state) => ({
         role,

@@ -7,7 +7,7 @@ import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore, Role } from '../../store/useAppStore';
 import { Phone, Lock, Star, Globe, Camera, Upload, CheckCircle2, User, Gift, Eye, EyeOff, ShieldCheck, ArrowRight, ChevronDown, Instagram, Youtube, AlertCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
-import { normalizePhoneNumber, getFriendlyAuthErrorMessage, syncUserProfile, uploadCNICDocument } from '../../lib/authHelpers';
+import { normalizePhoneNumber, getFriendlyAuthErrorMessage, syncUserProfile, uploadCNICDocument, getCnicStatus } from '../../lib/authHelpers';
 
 const LogoHeader = () => (
   <div className="flex flex-col items-center lg:items-start justify-center py-4">
@@ -212,7 +212,7 @@ export function LoginScreen() {
 
           const userRole = (profile?.Role || data.user.user_metadata?.role || 'user') as Role;
           const fullName = data.user.user_metadata?.full_name || '';
-          const cnicStatus = data.user.user_metadata?.cnic_status || 'unverified';
+          const cnicStatus = getCnicStatus(data.user);
 
           login(userRole, fullName, normalizedPhone, data.user, data.session);
           setCnicStatus(cnicStatus);
@@ -279,7 +279,7 @@ export function LoginScreen() {
 
           const userRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
           const fullName = user.user_metadata?.full_name || '';
-          const cnicStatus = user.user_metadata?.cnic_status || 'unverified';
+          const cnicStatus = getCnicStatus(user);
 
           login(userRole, fullName, normalizedPhone, user, data.session);
           setCnicStatus(cnicStatus);
@@ -312,23 +312,26 @@ export function LoginScreen() {
     const normalizedPhone = normalizePhoneNumber(phone);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const currentUser = user || useAppStore.getState().user;
+      const { data: { session } } = await supabase.auth.getSession();
+      const currentUser = session?.user;
 
-      if (currentUser) {
-        if (referralCode) {
-          await supabase.auth.updateUser({
-            data: { referral_code: referralCode },
-          });
-        }
-        await syncUserProfile(currentUser.id, normalizedPhone, selectedRole, {
-          full_name: name.trim(),
-          referral_code: referralCode,
-        });
-        login(selectedRole, name.trim() || 'User', normalizedPhone, currentUser);
-      } else {
-        login(selectedRole, name.trim() || 'User', normalizedPhone);
+      // Never enter the app without a real Supabase session
+      if (!currentUser) {
+        setIsLoading(false);
+        setErrors({ referral: 'Your session could not be verified. Please log in again.' });
+        return;
       }
+
+      if (referralCode) {
+        await supabase.auth.updateUser({
+          data: { referral_code: referralCode },
+        });
+      }
+      await syncUserProfile(currentUser.id, normalizedPhone, selectedRole, {
+        full_name: name.trim(),
+        referral_code: referralCode,
+      });
+      login(selectedRole, name.trim() || 'User', normalizedPhone, currentUser, session);
 
       setIsLoading(false);
       if (selectedRole === 'helper') {
@@ -337,14 +340,8 @@ export function LoginScreen() {
         navigate('/user');
       }
     } catch (err: any) {
-      console.warn('Signup completion notice:', err);
-      login(selectedRole, name.trim() || 'User', normalizedPhone);
       setIsLoading(false);
-      if (selectedRole === 'helper') {
-        navigate('/helper');
-      } else {
-        navigate('/user');
-      }
+      setErrors({ referral: getFriendlyAuthErrorMessage(err) });
     }
   };
 
@@ -540,30 +537,44 @@ export function CNICVerificationScreen() {
     setIsLoading(true);
     setUploadError(null);
 
-    const userId = user?.id || 'demo-user-id';
+    if (!frontFile || !backFile || !selfieFile) {
+      setUploadError('Please capture the CNIC front, back and a selfie before submitting.');
+      setIsLoading(false);
+      return;
+    }
+
+    // Storage RLS scopes uploads to the authenticated user's own folder
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    const userId = authUser?.id || user?.id;
+    if (!userId) {
+      setUploadError('Your session has expired. Please log in again to verify your CNIC.');
+      setIsLoading(false);
+      return;
+    }
 
     // Upload to Supabase Storage bucket 'cnic-verifications'
     try {
-      if (frontFile) {
-        await uploadCNICDocument(frontFile, userId, 'front');
-      }
-      if (backFile) {
-        await uploadCNICDocument(backFile, userId, 'back');
-      }
-      if (selfieFile) {
-        await uploadCNICDocument(selfieFile, userId, 'selfie');
+      const uploads: [File, 'front' | 'back' | 'selfie'][] = [
+        [frontFile, 'front'],
+        [backFile, 'back'],
+        [selfieFile, 'selfie'],
+      ];
+      for (const [file, docType] of uploads) {
+        const result = await uploadCNICDocument(file, userId, docType);
+        if (!result.success) {
+          throw new Error(result.error || `Failed to upload CNIC ${docType}.`);
+        }
       }
 
       // Record verification status as 'pending' in Supabase user metadata
-      try {
-        await supabase.auth.updateUser({
-          data: {
-            cnic_status: 'pending',
-            cnic_submitted_at: new Date().toISOString(),
-          },
-        });
-      } catch (metaErr) {
-        console.warn('Update user metadata warning:', metaErr);
+      const { error: metaError } = await supabase.auth.updateUser({
+        data: {
+          cnic_status: 'pending',
+          cnic_submitted_at: new Date().toISOString(),
+        },
+      });
+      if (metaError) {
+        throw metaError;
       }
 
       // Update app store state to pending
@@ -572,10 +583,8 @@ export function CNICVerificationScreen() {
       setStep(4); // Display Verification Pending screen
     } catch (err: any) {
       console.error('Upload error:', err);
-      // Still set status to pending as documents were captured
-      setCnicStatus('pending');
+      setUploadError(err?.message || 'Failed to upload your documents. Please try again.');
       setIsLoading(false);
-      setStep(4);
     }
   };
 

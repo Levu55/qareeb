@@ -24,6 +24,7 @@ import { useLocation } from 'react-router-dom';
 import { ServicesScreen } from './components/ServicesScreen';
 import { ToastContainer } from './components/ToastContainer';
 import { supabase } from './lib/supabaseClient';
+import { getCnicStatus } from './lib/authHelpers';
 import { Role } from './store/useAppStore';
 
 function RootRedirect() {
@@ -79,7 +80,7 @@ export default function App() {
         const userRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
         const fullName = user.user_metadata?.full_name || '';
         const userPhone = profile?.Phone || user.phone || '';
-        const cnicStatus = user.user_metadata?.cnic_status || 'unverified';
+        const cnicStatus = getCnicStatus(user);
 
         useAppStore.getState().login(userRole, fullName, userPhone, user, session);
         useAppStore.getState().setCnicStatus(cnicStatus);

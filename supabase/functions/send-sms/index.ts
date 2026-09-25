@@ -79,26 +79,20 @@ Deno.serve(async (req: Request) => {
       );
     }
   } else {
-    // If no secret configured yet, parse JSON directly (with security warning in logs)
-    console.warn('[Qareeb SMS Hook] Warning: SEND_SMS_HOOK_SECRET is not configured. Webhook signature is not verified.');
-    try {
-      const parsed = JSON.parse(rawPayload);
-      user = parsed?.user;
-      sms = parsed?.sms;
-    } catch {
-      return new Response(
-        JSON.stringify({
-          error: {
-            http_code: 400,
-            message: 'Invalid JSON payload received.',
-          },
-        }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-    }
+    // Fail closed: without signature verification anyone could trigger paid SMS sends
+    console.error('[Qareeb SMS Hook] SEND_SMS_HOOK_SECRET is not configured. Refusing unsigned request.');
+    return new Response(
+      JSON.stringify({
+        error: {
+          http_code: 500,
+          message: 'SMS hook is not configured: SEND_SMS_HOOK_SECRET is missing.',
+        },
+      }),
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
   }
 
   const phone = user?.phone;
