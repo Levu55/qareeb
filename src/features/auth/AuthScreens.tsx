@@ -144,7 +144,14 @@ export function LoginScreen() {
       hasError = true;
     }
     
-    if (phone.replace(/\D/g, '').length < 10) {
+    // Must be a valid E.164 number, and Pakistani numbers a full mobile number (+92 3XX XXXXXXX),
+    // before an OTP is requested
+    const candidatePhone = normalizePhoneNumber(phone);
+    if (
+      phone.replace(/\D/g, '').length < 10 ||
+      !/^\+[1-9]\d{7,14}$/.test(candidatePhone) ||
+      (candidatePhone.startsWith('+92') && !/^\+923\d{9}$/.test(candidatePhone))
+    ) {
       setErrors(prev => ({ ...prev, phone: 'Please enter a valid mobile number (e.g., 03001234567)' }));
       hasError = true;
     }
