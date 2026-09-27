@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { formatPKR, cn } from '../../lib/utils';
 import { Users, Briefcase, AlertTriangle, Wallet, CheckCircle, XCircle, UserCheck, Star } from 'lucide-react';
 import { useAppStore } from '../../store/useAppStore';
+import { supabase } from '../../lib/supabaseClient';
 
 export function AdminDashboard() {
   const role = useAppStore(state => state.role);
@@ -161,9 +162,98 @@ export function UserManagementScreen() {
   );
 }
 
+interface CnicSubmission {
+  userId: string;
+  name: string;
+  phone: string;
+  role: string;
+  submittedAt: string | null;
+  previouslyRejected: boolean;
+  isSelf: boolean;
+  documents: { front: string | null; back: string | null; selfie: string | null };
+}
+
+async function callReviewCnic(body: Record<string, unknown>) {
+  const { data, error } = await supabase.functions.invoke('review-cnic', { body });
+  if (error) {
+    // Surface the function's own error message when available
+    const message = await (error as any).context?.json?.().then((j: any) => j?.error).catch(() => null);
+    throw new Error(message || error.message || 'Review service unavailable.');
+  }
+  return data;
+}
+
+function timeAgo(iso: string | null) {
+  if (!iso) return 'Submission time unknown';
+  const minutes = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (minutes < 1) return 'Submitted just now';
+  if (minutes < 60) return `Submitted ${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `Submitted ${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `Submitted ${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function DocumentImage({ url, alt, className }: { url: string | null; alt: string; className?: string }) {
+  if (!url) {
+    return <span className="text-sm text-gray-400">Not provided</span>;
+  }
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className="w-full h-full">
+      <img src={url} alt={alt} className={cn('w-full h-full object-contain bg-white', className)} />
+    </a>
+  );
+}
+
 export function AdminCNICQueue() {
-  const [selected, setSelected] = useState<number | null>(1);
-  
+  const addToast = useAppStore(state => state.addToast);
+  const [submissions, setSubmissions] = useState<CnicSubmission[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [isReviewing, setIsReviewing] = useState(false);
+
+  const loadQueue = async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const data = await callReviewCnic({ action: 'list' });
+      const list: CnicSubmission[] = data?.submissions ?? [];
+      setSubmissions(list);
+      setSelectedId(current => (current && list.some(s => s.userId === current) ? current : list[0]?.userId ?? null));
+    } catch (err: any) {
+      setLoadError(err?.message || 'Could not load the review queue.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadQueue();
+  }, []);
+
+  const selected = submissions.find(s => s.userId === selectedId) || null;
+
+  const handleReview = async (decision: 'approved' | 'rejected') => {
+    if (!selected) return;
+    let note: string | undefined;
+    if (decision === 'rejected') {
+      const reason = window.prompt('Reason for rejection (kept in the review record):');
+      if (!reason || !reason.trim()) return;
+      note = reason.trim();
+    }
+    setIsReviewing(true);
+    try {
+      await callReviewCnic({ action: 'review', userId: selected.userId, decision, note });
+      addToast(decision === 'approved' ? 'CNIC approved.' : 'CNIC rejected.', decision === 'approved' ? 'success' : 'info');
+      await loadQueue();
+    } catch (err: any) {
+      addToast(err?.message || 'Review failed.', 'error');
+    } finally {
+      setIsReviewing(false);
+    }
+  };
+
   return (
     <div className="h-full max-w-6xl mx-auto flex flex-col">
       <div className="mb-6">
@@ -174,21 +264,30 @@ export function AdminCNICQueue() {
       <div className="flex-1 grid grid-cols-3 gap-6 min-h-0">
         {/* Queue List */}
         <Card className="col-span-1 p-0 flex flex-col h-full overflow-hidden">
-          <div className="p-4 border-b border-gray-100 bg-gray-50 font-semibold text-gray-700">
-            Pending Review (12)
+          <div className="p-4 border-b border-gray-100 bg-gray-50 font-semibold text-gray-700 flex items-center justify-between">
+            <span>Pending Review ({isLoading ? '…' : submissions.length})</span>
+            <button onClick={loadQueue} disabled={isLoading} className="text-sm font-medium text-brand-orange hover:underline disabled:opacity-50">
+              Refresh
+            </button>
           </div>
           <div className="flex-1 overflow-y-auto">
-             {[1, 2, 3, 4, 5].map((item) => (
-               <div 
-                 key={item} 
-                 onClick={() => setSelected(item)}
+             {loadError && <p className="p-4 text-sm text-red-600">{loadError}</p>}
+             {!isLoading && !loadError && submissions.length === 0 && (
+               <p className="p-4 text-sm text-gray-500">No submissions are waiting for review.</p>
+             )}
+             {submissions.map((item) => (
+               <div
+                 key={item.userId}
+                 onClick={() => setSelectedId(item.userId)}
                  className={cn(
                    "p-4 border-b border-gray-100 cursor-pointer transition-colors",
-                   selected === item ? "bg-brand-orange-light border-l-4 border-brand-orange border-l-brand-orange" : "hover:bg-gray-50"
+                   selectedId === item.userId ? "bg-brand-orange-light border-l-4 border-brand-orange border-l-brand-orange" : "hover:bg-gray-50"
                  )}
                >
-                 <p className="font-semibold text-gray-900">Applicant #{1024 + item}</p>
-                 <p className="text-sm text-gray-500 mt-1">Submitted 2 hours ago</p>
+                 <p className="font-semibold text-gray-900">{item.name || 'Unnamed applicant'}{item.isSelf ? ' (you)' : ''}</p>
+                 <p className="text-sm text-gray-500 mt-1">
+                   {item.role === 'helper' ? 'Helper' : 'Customer'} • {timeAgo(item.submittedAt)}{item.previouslyRejected ? ' • resubmitted' : ''}
+                 </p>
                </div>
              ))}
           </div>
@@ -199,48 +298,72 @@ export function AdminCNICQueue() {
           <Card className="col-span-2 p-6 flex flex-col h-full overflow-y-auto">
             <div className="flex justify-between items-start mb-6">
               <div>
-                <h2 className="text-xl font-bold text-gray-900">Applicant #1025</h2>
-                <p className="text-gray-500">Name: Usman Ali • Phone: 0300 1234567</p>
+                <h2 className="text-xl font-bold text-gray-900">{selected.name || 'Unnamed applicant'}</h2>
+                <p className="text-gray-500">
+                  {selected.role === 'helper' ? 'Helper' : 'Customer'} • Phone: {selected.phone || 'unknown'}
+                </p>
               </div>
-              <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-semibold">Pending Review</span>
+              <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-semibold">
+                {selected.previouslyRejected ? 'Resubmitted' : 'Pending Review'}
+              </span>
             </div>
 
             <div className="grid grid-cols-2 gap-4 mb-6">
               <div>
                 <p className="text-sm font-semibold text-gray-700 mb-2">CNIC Front</p>
                 <div className="bg-gray-100 rounded-2xl h-48 border-2 border-dashed border-gray-300 flex items-center justify-center overflow-hidden">
-                   <img src="https://images.unsplash.com/photo-1620311497914-f06b64bfa9be?w=400&q=80" alt="CNIC Front" className="w-full h-full object-cover opacity-80" />
+                   <DocumentImage url={selected.documents.front} alt="CNIC Front" />
                 </div>
               </div>
               <div>
                 <p className="text-sm font-semibold text-gray-700 mb-2">CNIC Back</p>
                 <div className="bg-gray-100 rounded-2xl h-48 border-2 border-dashed border-gray-300 flex items-center justify-center overflow-hidden">
-                   <img src="https://images.unsplash.com/photo-1620311497914-f06b64bfa9be?w=400&q=80" alt="CNIC Back" className="w-full h-full object-cover opacity-40 grayscale" />
+                   <DocumentImage url={selected.documents.back} alt="CNIC Back" />
                 </div>
               </div>
             </div>
 
             <div className="mb-8">
               <p className="text-sm font-semibold text-gray-700 mb-2">Live Selfie Match</p>
-              <div className="flex items-center p-4 bg-green-50 border border-green-100 rounded-2xl">
-                 <div className="w-16 h-16 rounded-full overflow-hidden me-4 border-2 border-green-500">
-                    <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Usman" alt="Selfie" className="w-full h-full bg-white" />
+              <div className="flex items-center p-4 bg-gray-50 border border-gray-100 rounded-2xl">
+                 <div className="w-16 h-16 rounded-full overflow-hidden me-4 border-2 border-gray-300 flex items-center justify-center bg-white shrink-0">
+                    <DocumentImage url={selected.documents.selfie} alt="Selfie" className="object-cover" />
                  </div>
                  <div>
-                   <p className="font-semibold text-green-900">Auto-check Confidence: 94%</p>
-                   <p className="text-sm text-green-700">Face matches CNIC photo.</p>
+                   <p className="font-semibold text-gray-900">Manual check required</p>
+                   <p className="text-sm text-gray-600">
+                     Compare the selfie with the CNIC photo and check the card is a genuine, readable Pakistani CNIC. Click an image to open it full size.
+                   </p>
                  </div>
               </div>
             </div>
 
+            {selected.isSelf && (
+              <p className="mb-4 text-sm text-gray-500">This is your own submission. Another admin must review it.</p>
+            )}
+
             <div className="mt-auto flex justify-end space-x-4 border-t border-gray-100 pt-6">
-               <Button variant="danger" className="w-32 bg-white text-red-600 border-2 border-red-200 hover:bg-red-50">Reject</Button>
-               <Button className="w-40 bg-brand-orange hover:bg-brand-orange-hover"><CheckCircle className="w-5 h-5 me-2" /> Approve</Button>
+               <Button
+                 variant="danger"
+                 className="w-32 bg-white text-red-600 border-2 border-red-200 hover:bg-red-50"
+                 disabled={isReviewing || selected.isSelf}
+                 onClick={() => handleReview('rejected')}
+               >
+                 Reject
+               </Button>
+               <Button
+                 className="w-40 bg-brand-orange hover:bg-brand-orange-hover"
+                 disabled={isReviewing || selected.isSelf || !selected.documents.front}
+                 isLoading={isReviewing}
+                 onClick={() => handleReview('approved')}
+               >
+                 <CheckCircle className="w-5 h-5 me-2" /> Approve
+               </Button>
             </div>
           </Card>
         ) : (
           <div className="col-span-2 flex items-center justify-center text-gray-400">
-            Select an application to review
+            {isLoading ? 'Loading submissions…' : 'Select an application to review'}
           </div>
         )}
       </div>

@@ -79,10 +79,17 @@ export type CnicStatus = 'unverified' | 'pending' | 'approved' | 'rejected';
  */
 export function getCnicStatus(user: any): CnicStatus {
   const reviewed = user?.app_metadata?.cnic_status;
-  if (reviewed === 'approved' || reviewed === 'rejected') {
-    return reviewed;
+  const submitted = user?.user_metadata?.cnic_status === 'pending';
+  if (reviewed === 'approved') {
+    return 'approved';
   }
-  return user?.user_metadata?.cnic_status === 'pending' ? 'pending' : 'unverified';
+  if (reviewed === 'rejected') {
+    // New documents submitted after the rejection go back into the review queue
+    const submittedAt = Date.parse(user?.user_metadata?.cnic_submitted_at || '') || 0;
+    const reviewedAt = Date.parse(user?.app_metadata?.cnic_reviewed_at || '') || 0;
+    return submitted && submittedAt > reviewedAt ? 'pending' : 'rejected';
+  }
+  return submitted ? 'pending' : 'unverified';
 }
 
 /**

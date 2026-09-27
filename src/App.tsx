@@ -179,15 +179,8 @@ export default function App() {
           <Route path="disputes" element={<AdminDisputesScreen />} />
           <Route path="cnic" element={<AdminCNICQueue />} />
           <Route path="users" element={<UserManagementScreen />} />
-          <Route path="login" element={
-             <div className="flex h-full items-center justify-center -m-8">
-               <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl">
-                 <h2 className="text-2xl font-bold mb-6 text-center">Admin Access</h2>
-                 <button onClick={() => { useAppStore.getState().login('admin', 'Admin User'); window.location.href='/admin'; }} className="w-full bg-gray-900 text-white p-3 rounded-xl mb-3">Login as Admin</button>
-                 <button onClick={() => { useAppStore.getState().login('superadmin', 'Founder'); window.location.href='/admin/super'; }} className="w-full bg-brand-orange text-white p-3 rounded-xl">Login as Founder (Super Admin)</button>
-               </div>
-             </div>
-          } />
+          {/* Admins sign in with their real account; the login screen routes admin roles to /admin */}
+          <Route path="login" element={<Navigate to="/auth/login" replace />} />
         </Route>
 
         <Route path="/" element={<RootRedirect />} />
