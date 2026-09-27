@@ -194,6 +194,13 @@ function timeAgo(iso: string | null) {
   return `Submitted ${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+function roleLabel(role: string) {
+  if (role === 'helper') return 'Helper';
+  if (role === 'admin') return 'Admin';
+  if (role === 'superadmin') return 'Super Admin';
+  return 'Customer';
+}
+
 function DocumentImage({ url, alt, className }: { url: string | null; alt: string; className?: string }) {
   if (!url) {
     return <span className="text-sm text-gray-400">Not provided</span>;
@@ -212,6 +219,8 @@ export function AdminCNICQueue() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isReviewing, setIsReviewing] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
 
   const loadQueue = async () => {
     setIsLoading(true);
@@ -234,18 +243,25 @@ export function AdminCNICQueue() {
 
   const selected = submissions.find(s => s.userId === selectedId) || null;
 
+  const selectSubmission = (userId: string) => {
+    setSelectedId(userId);
+    setRejecting(false);
+    setRejectReason('');
+  };
+
   const handleReview = async (decision: 'approved' | 'rejected') => {
     if (!selected) return;
-    let note: string | undefined;
-    if (decision === 'rejected') {
-      const reason = window.prompt('Reason for rejection (kept in the review record):');
-      if (!reason || !reason.trim()) return;
-      note = reason.trim();
-    }
+    const note = decision === 'rejected' ? rejectReason.trim() : undefined;
+    if (decision === 'rejected' && !note) return;
     setIsReviewing(true);
     try {
       await callReviewCnic({ action: 'review', userId: selected.userId, decision, note });
-      addToast(decision === 'approved' ? 'CNIC approved.' : 'CNIC rejected.', decision === 'approved' ? 'success' : 'info');
+      addToast(
+        decision === 'approved' ? `CNIC approved for ${selected.name || 'applicant'}.` : `CNIC rejected for ${selected.name || 'applicant'}.`,
+        decision === 'approved' ? 'success' : 'info'
+      );
+      setRejecting(false);
+      setRejectReason('');
       await loadQueue();
     } catch (err: any) {
       addToast(err?.message || 'Review failed.', 'error');
@@ -278,7 +294,7 @@ export function AdminCNICQueue() {
              {submissions.map((item) => (
                <div
                  key={item.userId}
-                 onClick={() => setSelectedId(item.userId)}
+                 onClick={() => selectSubmission(item.userId)}
                  className={cn(
                    "p-4 border-b border-gray-100 cursor-pointer transition-colors",
                    selectedId === item.userId ? "bg-brand-orange-light border-l-4 border-brand-orange border-l-brand-orange" : "hover:bg-gray-50"
@@ -286,7 +302,7 @@ export function AdminCNICQueue() {
                >
                  <p className="font-semibold text-gray-900">{item.name || 'Unnamed applicant'}{item.isSelf ? ' (you)' : ''}</p>
                  <p className="text-sm text-gray-500 mt-1">
-                   {item.role === 'helper' ? 'Helper' : 'Customer'} • {timeAgo(item.submittedAt)}{item.previouslyRejected ? ' • resubmitted' : ''}
+                   {roleLabel(item.role)} • {timeAgo(item.submittedAt)}{item.previouslyRejected ? ' • resubmitted' : ''}
                  </p>
                </div>
              ))}
@@ -300,7 +316,7 @@ export function AdminCNICQueue() {
               <div>
                 <h2 className="text-xl font-bold text-gray-900">{selected.name || 'Unnamed applicant'}</h2>
                 <p className="text-gray-500">
-                  {selected.role === 'helper' ? 'Helper' : 'Customer'} • Phone: {selected.phone || 'unknown'}
+                  {roleLabel(selected.role)} • Phone: {selected.phone || 'unknown'}
                 </p>
               </div>
               <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-semibold">
@@ -339,27 +355,56 @@ export function AdminCNICQueue() {
             </div>
 
             {selected.isSelf && (
-              <p className="mb-4 text-sm text-gray-500">This is your own submission. Another admin must review it.</p>
+              <p className="mb-4 p-3 bg-yellow-50 text-yellow-800 text-sm rounded-xl">This is your own submission, so Approve and Reject are disabled. Another admin must review it.</p>
             )}
 
-            <div className="mt-auto flex justify-end space-x-4 border-t border-gray-100 pt-6">
-               <Button
-                 variant="danger"
-                 className="w-32 bg-white text-red-600 border-2 border-red-200 hover:bg-red-50"
-                 disabled={isReviewing || selected.isSelf}
-                 onClick={() => handleReview('rejected')}
-               >
-                 Reject
-               </Button>
-               <Button
-                 className="w-40 bg-brand-orange hover:bg-brand-orange-hover"
-                 disabled={isReviewing || selected.isSelf || !selected.documents.front}
-                 isLoading={isReviewing}
-                 onClick={() => handleReview('approved')}
-               >
-                 <CheckCircle className="w-5 h-5 me-2" /> Approve
-               </Button>
-            </div>
+            {rejecting ? (
+              <div className="mt-auto border-t border-gray-100 pt-6">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Reason for rejection</label>
+                <textarea
+                  value={rejectReason}
+                  onChange={(e) => setRejectReason(e.target.value)}
+                  maxLength={500}
+                  rows={3}
+                  autoFocus
+                  placeholder="e.g. Photo is not a CNIC, text is unreadable, selfie does not match"
+                  className="w-full rounded-2xl border border-gray-300 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+                />
+                <div className="flex justify-end space-x-4 mt-4">
+                  <Button variant="outline" className="w-32" disabled={isReviewing} onClick={() => { setRejecting(false); setRejectReason(''); }}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="danger"
+                    className="w-44 bg-red-600 text-white hover:bg-red-700"
+                    disabled={isReviewing || !rejectReason.trim()}
+                    isLoading={isReviewing}
+                    onClick={() => handleReview('rejected')}
+                  >
+                    Confirm Reject
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-auto flex justify-end space-x-4 border-t border-gray-100 pt-6">
+                 <Button
+                   variant="danger"
+                   className="w-32 bg-white text-red-600 border-2 border-red-200 hover:bg-red-50"
+                   disabled={isReviewing || selected.isSelf}
+                   onClick={() => setRejecting(true)}
+                 >
+                   Reject
+                 </Button>
+                 <Button
+                   className="w-40 bg-brand-orange hover:bg-brand-orange-hover"
+                   disabled={isReviewing || selected.isSelf || !selected.documents.front}
+                   isLoading={isReviewing}
+                   onClick={() => handleReview('approved')}
+                 >
+                   <CheckCircle className="w-5 h-5 me-2" /> Approve
+                 </Button>
+              </div>
+            )}
           </Card>
         ) : (
           <div className="col-span-2 flex items-center justify-center text-gray-400">
