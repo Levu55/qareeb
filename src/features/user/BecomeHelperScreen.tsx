@@ -5,7 +5,7 @@ import { Input } from '../../components/ui/Input';
 import { useAppStore } from '../../store/useAppStore';
 import { ArrowLeft, CheckCircle2, ShieldCheck, Upload } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
-import { normalizePhoneNumber, syncUserProfile, uploadCNICDocument } from '../../lib/authHelpers';
+import { normalizePhoneNumber, syncUserProfile, uploadCNICDocument, validateCnicImage, CNIC_ALLOWED_TYPES } from '../../lib/authHelpers';
 
 export function BecomeHelperScreen() {
   const navigate = useNavigate();
@@ -157,11 +157,20 @@ export function BecomeHelperScreen() {
                 <input
                   type="file"
                   ref={fileInputRef}
-                  accept="image/*"
+                  accept={CNIC_ALLOWED_TYPES.join(",")}
                   className="hidden"
-                  onChange={(e) => {
-                    setCnicFront(e.target.files?.[0] || null);
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0] || null;
+                    e.target.value = '';
                     setSubmitError(null);
+                    if (!file) return;
+                    const problem = await validateCnicImage(file);
+                    if (problem) {
+                      setCnicFront(null);
+                      setSubmitError(problem);
+                      return;
+                    }
+                    setCnicFront(file);
                   }}
                 />
                 <div

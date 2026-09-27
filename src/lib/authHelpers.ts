@@ -132,6 +132,56 @@ export async function syncUserProfile(
   }
 }
 
+// Photo formats accepted for CNIC documents (mirrors the storage bucket's allowed_mime_types)
+export const CNIC_ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+const CNIC_MIN_BYTES = 20 * 1024;
+const CNIC_MAX_BYTES = 10 * 1024 * 1024;
+const CNIC_MIN_SHORT_SIDE = 480;
+const CNIC_MIN_LONG_SIDE = 640;
+
+/**
+ * Basic quality checks for a CNIC/selfie photo before upload. This rejects files that
+ * cannot be a readable CNIC photo; it does not verify identity. Approval happens only
+ * through admin review (app_metadata.cnic_status).
+ */
+export async function validateCnicImage(file: File): Promise<string | null> {
+  const type = file.type.toLowerCase();
+  if (!CNIC_ALLOWED_TYPES.includes(type)) {
+    return 'Please upload a photo (JPG, PNG, WebP or HEIC).';
+  }
+  if (file.size < CNIC_MIN_BYTES) {
+    return 'This image is too small. Please take a clear, full photo of your CNIC.';
+  }
+  if (file.size > CNIC_MAX_BYTES) {
+    return 'This image is larger than 10 MB. Please use a smaller photo.';
+  }
+
+  // Browsers cannot decode HEIC/HEIF, so dimensions are only checked for other formats
+  if (type === 'image/heic' || type === 'image/heif') {
+    return null;
+  }
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    const shortSide = Math.min(bitmap.width, bitmap.height);
+    const longSide = Math.max(bitmap.width, bitmap.height);
+    bitmap.close();
+    if (shortSide < CNIC_MIN_SHORT_SIDE || longSide < CNIC_MIN_LONG_SIDE) {
+      return `This photo is too low resolution (${longSide}×${shortSide}). Please use a clearer photo, at least 640×480.`;
+    }
+  } catch {
+    return 'This file could not be read as an image. Please choose another photo.';
+  }
+
+  return null;
+}
+
+/** SHA-256 of a file's contents, used to stop the same photo being reused for different documents. */
+export async function hashFile(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * Uploads CNIC document or selfie to the private Supabase Storage bucket 'cnic-verifications'.
  */

@@ -7,7 +7,7 @@ import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore, Role } from '../../store/useAppStore';
 import { Phone, Lock, Star, Globe, Camera, Upload, CheckCircle2, User, Gift, Eye, EyeOff, ShieldCheck, ArrowRight, ChevronDown, Instagram, Youtube, AlertCircle } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
-import { normalizePhoneNumber, getFriendlyAuthErrorMessage, syncUserProfile, uploadCNICDocument, getCnicStatus } from '../../lib/authHelpers';
+import { normalizePhoneNumber, getFriendlyAuthErrorMessage, syncUserProfile, uploadCNICDocument, getCnicStatus, validateCnicImage, hashFile, CNIC_ALLOWED_TYPES } from '../../lib/authHelpers';
 
 const LogoHeader = () => (
   <div className="flex flex-col items-center lg:items-start justify-center py-4">
@@ -523,10 +523,27 @@ export function CNICVerificationScreen() {
   const [selfiePreview, setSelfiePreview] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileHashes, setFileHashes] = useState<Record<number, string>>({});
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file after an error
     if (!file) return;
+
+    setUploadError(null);
+    const problem = await validateCnicImage(file);
+    if (problem) {
+      setUploadError(problem);
+      return;
+    }
+
+    const hash = await hashFile(file);
+    const reusedStep = Object.entries(fileHashes).find(([s, h]) => Number(s) !== step && h === hash);
+    if (reusedStep) {
+      setUploadError('This is the same photo you used for another step. Please take a separate photo.');
+      return;
+    }
+    setFileHashes(prev => ({ ...prev, [step]: hash }));
 
     const previewUrl = URL.createObjectURL(file);
     if (step === 1) {
@@ -610,7 +627,7 @@ export function CNICVerificationScreen() {
         type="file" 
         ref={fileInputRef} 
         onChange={handleFileChange} 
-        accept="image/*" 
+        accept={CNIC_ALLOWED_TYPES.join(",")} 
         className="hidden" 
       />
 
