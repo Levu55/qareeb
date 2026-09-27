@@ -7,20 +7,11 @@ import { MapPin, Navigation as NavIcon, Clock, CheckCircle2, AlertTriangle, Brie
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { CATEGORIES } from '../../data/services';
 import { useAppStore } from '../../store/useAppStore';
-import { getMyBookings, getMyBooking, getMyHelperRecord, setMyAvailability, updateBookingStatus, categoryName, formatPrice, CURRENT_BOOKING_KEY, type MyBooking } from '../../lib/marketplace';
+import { getMyBookings, getMyBooking, getMyHelperRecord, setMyAvailability, updateBookingStatus, getMyEarnings, getReviewsAboutMe, submitReview, shareHelperLocation, osmEmbedUrl, formatDistance, categoryName, formatPrice, CURRENT_BOOKING_KEY, type EarningsDay, type MyBooking, type ReviewRecord } from '../../lib/marketplace';
 
 
 
 
-const earningsData = [
-  { day: 'Mon', amount: 1200 },
-  { day: 'Tue', amount: 800 },
-  { day: 'Wed', amount: 1500 },
-  { day: 'Thu', amount: 2000 },
-  { day: 'Fri', amount: 4500 },
-  { day: 'Sat', amount: 3200 },
-  { day: 'Sun', amount: 0 },
-];
 export function HelperHome() {
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -31,15 +22,43 @@ export function HelperHome() {
   const { helperServices } = useAppStore();
   const addToast = useAppStore(state => state.addToast);
 
-  // Availability and verification come from the helper record
+  const [earnings, setEarnings] = useState<EarningsDay[]>([]);
+  const [myRating, setMyRating] = useState<number | null>(null);
+  const [reviews, setReviews] = useState<ReviewRecord[]>([]);
+  const [myCategories, setMyCategories] = useState<string[]>([]);
+  // Services saved in Supabase; the local list is only a fallback before it loads
+  const myServices = myCategories.length > 0 ? myCategories : (helperServices || []);
+
+  // Availability, verification and rating come from the helper record
   useEffect(() => {
     getMyHelperRecord()
       .then(record => {
         setIsAvailable(Boolean(record?.['Is-available']));
         setVerifyStatus(record?.['Verify-status'] ?? null);
+        setMyRating(record?.Rating != null ? Number(record.Rating) : null);
+        setMyCategories(record?.Categories ?? []);
       })
       .catch(err => addToast(err?.message || 'Could not load your helper profile.', 'error'));
+    getMyEarnings(7)
+      .then(setEarnings)
+      .catch(err => console.warn('Earnings load failed:', err));
+    getReviewsAboutMe(100)
+      .then(setReviews)
+      .catch(err => console.warn('Reviews load failed:', err));
   }, []);
+
+  // While available, share the device position so customers see distance/ETA (not coordinates)
+  useEffect(() => {
+    if (!isAvailable) return;
+    shareHelperLocation().catch(err => console.warn('Location update failed:', err));
+  }, [isAvailable]);
+
+  const todayKey = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' });
+  const earnedToday = earnings.find(d => d.day === todayKey)?.amount ?? 0;
+  const earningsData = earnings.map(d => ({
+    day: new Date(`${d.day}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short' }),
+    amount: d.amount,
+  }));
 
   // Pending requests assigned to this helper, refreshed while available
   useEffect(() => {
@@ -145,6 +164,7 @@ export function HelperHome() {
                   <h3 className="font-bold text-gray-900 text-lg">{request.title || 'New task'}</h3>
                   <p className="text-gray-500 text-sm flex items-center mt-1 mb-1">
                     <MapPin className="w-4 h-4 me-1" /> {request.location || 'Address shared after accepting'}
+                    {formatDistance(request.helper_distance_km) && ` (${formatDistance(request.helper_distance_km)} away)`}
                   </p>
                   <div className="flex items-center gap-2">
                     <div className="bg-brand-teal/10 px-2 py-0.5 rounded text-[10px] font-bold text-brand-teal flex items-center gap-1">
@@ -171,12 +191,12 @@ export function HelperHome() {
         <h2 className="text-lg font-bold text-gray-900 mb-4 mt-8">Your Stats</h2>
         <div className="grid grid-cols-2 gap-4">
           <Card className="p-4 text-center hover:-translate-y-1 hover:shadow-md transition-all duration-300">
-             <div className="text-2xl font-bold text-gray-900 mb-1">Rs. 4500</div>
+             <div className="text-2xl font-bold text-gray-900 mb-1">{formatPrice(earnedToday)}</div>
              <div className="text-xs text-gray-500 font-medium">Earned Today</div>
           </Card>
           <Card className="p-4 text-center hover:-translate-y-1 hover:shadow-md transition-all duration-300">
-             <div className="text-2xl font-bold text-gray-900 mb-1 flex items-center justify-center"><Star className="w-5 h-5 text-yellow-400 fill-current me-1"/> 4.9</div>
-             <div className="text-xs text-gray-500 font-medium">Rating (128)</div>
+             <div className="text-2xl font-bold text-gray-900 mb-1 flex items-center justify-center"><Star className="w-5 h-5 text-yellow-400 fill-current me-1"/> {myRating ? myRating.toFixed(1) : 'New'}</div>
+             <div className="text-xs text-gray-500 font-medium">Rating ({reviews.length >= 100 ? '100+' : reviews.length})</div>
           </Card>
         </div>
 
@@ -201,15 +221,38 @@ export function HelperHome() {
               </BarChart>
             </ResponsiveContainer>
           </div>
+          <p className="text-[11px] text-gray-400 mt-2">Value of jobs you completed each day. In-app payments and payouts are not enabled yet.</p>
         </Card>
+
+        <h2 className="text-lg font-bold text-gray-900 mb-4 mt-8 flex items-center gap-2"><Star className="w-5 h-5 text-yellow-400 fill-current" /> Recent Reviews</h2>
+        {reviews.length === 0 ? (
+          <p className="text-sm text-gray-500 mb-4">No reviews yet. Customers can rate you after a completed job.</p>
+        ) : (
+          <div className="space-y-3 mb-4">
+            {reviews.slice(0, 5).map(review => (
+              <Card key={review.ID} className="p-4">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center">
+                    {[1, 2, 3, 4, 5].map(star => (
+                      <Star key={star} className={`w-4 h-4 ${star <= review.Rating ? 'text-yellow-400 fill-current' : 'text-gray-200'}`} />
+                    ))}
+                  </div>
+                  <span className="text-[11px] text-gray-400">{new Date(review['Created-at']).toLocaleDateString('en-PK', { month: 'short', day: 'numeric' })}</span>
+                </div>
+                {review.Comment && <p className="text-sm text-gray-600">{review.Comment}</p>}
+              </Card>
+            ))}
+          </div>
+        )}
+
         <h2 id="services" className="text-lg font-bold text-gray-900 mb-4 mt-8 scroll-mt-24">Your Service Categories</h2>
         <div className="grid grid-cols-2 gap-4">
-          {helperServices && helperServices.length > 0 ? helperServices.map(service => (
+          {myServices.length > 0 ? myServices.map(service => (
             <Card key={service} className="p-4 flex flex-col items-center text-center border-brand-teal/20 hover:-translate-y-1 hover:shadow-md transition-all duration-300 hover:border-brand-teal/40">
               <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-3 bg-brand-teal/10 text-brand-teal`}>
                 <Briefcase className="w-6 h-6" />
               </div>
-              <h3 className="font-bold text-gray-900 text-sm mb-1">{service}</h3>
+              <h3 className="font-bold text-gray-900 text-sm mb-1">{categoryName(service)}</h3>
               <p className="text-[10px] text-gray-500">Active</p>
             </Card>
           )) : (
@@ -272,6 +315,15 @@ export function ActiveJobScreen() {
     })();
   }, [bookingId]);
 
+  // Share position while travelling so the customer sees an up-to-date distance/ETA
+  useEffect(() => {
+    if (status !== 'navigating') return;
+    const share = () => shareHelperLocation().catch(err => console.warn('Location update failed:', err));
+    share();
+    const timer = setInterval(share, 60000);
+    return () => clearInterval(timer);
+  }, [status]);
+
   // Notice if the customer cancels while the helper is on the way
   useEffect(() => {
     if (!bookingId || (status !== 'navigating' && status !== 'working')) return;
@@ -297,6 +349,29 @@ export function ActiveJobScreen() {
   }, [status]);
 
   const elapsed = workStartedAt ? Math.max(0, Math.floor((now - workStartedAt) / 1000)) : 0;
+  const [jobSeconds, setJobSeconds] = useState<number | null>(null);
+  const [isSavingRating, setIsSavingRating] = useState(false);
+  const taskPoint = booking?.task_latitude != null && booking?.task_longitude != null
+    ? { latitude: booking.task_latitude, longitude: booking.task_longitude }
+    : null;
+  const jobDuration = jobSeconds === null
+    ? '—'
+    : jobSeconds >= 3600
+      ? `${Math.floor(jobSeconds / 3600)}h ${Math.round((jobSeconds % 3600) / 60)}m`
+      : `${Math.max(1, Math.round(jobSeconds / 60))}m`;
+
+  const submitCustomerRating = async () => {
+    if (!bookingId || rating === 0) return;
+    setIsSavingRating(true);
+    try {
+      await submitReview(bookingId, rating, feedback);
+      setStatus('completed');
+    } catch (err: any) {
+      addToast(err?.message || 'Could not save your rating.', 'error');
+    } finally {
+      setIsSavingRating(false);
+    }
+  };
   const pad = (v: number) => String(v).padStart(2, '0');
 
   const advance = async (steps: ('Arrived' | 'In-progress' | 'Completed')[], nextView: 'working' | 'rating') => {
@@ -320,7 +395,7 @@ export function ActiveJobScreen() {
     <div className="flex-1 bg-gray-50 flex flex-col h-full relative overflow-hidden">
       <div className="absolute inset-0 bg-gray-200 overflow-hidden pointer-events-none">
         <iframe 
-          src="https://www.openstreetmap.org/export/embed.html?bbox=74.31%2C31.50%2C74.38%2C31.56&layer=mapnik&marker=31.5204%2C74.3587" 
+          src={taskPoint ? osmEmbedUrl(taskPoint, 0.02) : "https://www.openstreetmap.org/export/embed.html?bbox=74.31%2C31.50%2C74.38%2C31.56&layer=mapnik&marker=31.5204%2C74.3587"}
           className="w-full h-full border-0 absolute inset-0 transform scale-110"
           title="Tracking Map"
         />
@@ -453,7 +528,7 @@ export function ActiveJobScreen() {
               <Button variant="outline" className="flex-1 h-12 border-gray-200 text-gray-600 hover:bg-gray-50">Need Help?</Button>
               <Button
                 className="flex-[2] h-12 bg-brand-orange hover:bg-brand-orange-hover shadow-md shadow-brand-orange/20"
-                onClick={() => advance(['Completed'], 'rating')}
+                onClick={() => { setJobSeconds(elapsed); advance(['Completed'], 'rating'); }}
                 isLoading={isUpdating}
                 disabled={isUpdating || !booking}
               >
@@ -483,7 +558,7 @@ export function ActiveJobScreen() {
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
               />
-              <Button className="w-full h-12 rounded-2xl text-lg bg-brand-orange" onClick={() => setStatus("completed")} disabled={rating === 0}>
+              <Button className="w-full h-12 rounded-2xl text-lg bg-brand-orange" onClick={submitCustomerRating} disabled={rating === 0 || isSavingRating} isLoading={isSavingRating}>
                 Submit Rating
               </Button>
             </div>
@@ -496,21 +571,21 @@ export function ActiveJobScreen() {
               <CheckCircle2 className="w-12 h-12" />
             </div>
             <div>
-              <h3 className="font-bold text-[32px] text-brand-teal mb-1 tracking-tight">PKR 800</h3>
-              <p className="text-sm text-gray-500 font-medium">Payment received via Wallet</p>
+              <h3 className="font-bold text-[32px] text-brand-teal mb-1 tracking-tight">{formatPrice(booking?.price)}</h3>
+              <p className="text-sm text-gray-500 font-medium">Job value · in-app payments are not enabled yet</p>
             </div>
             
             <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 my-6 flex justify-between items-center text-left">
               <div>
                 <p className="text-xs text-gray-500 mb-0.5">Job Duration</p>
-                <p className="text-sm font-bold text-gray-900">1h 15m</p>
+                <p className="text-sm font-bold text-gray-900">{jobDuration}</p>
               </div>
               <div className="w-[1px] h-8 bg-gray-200"></div>
               <div>
                 <p className="text-xs text-gray-500 mb-0.5">Customer Rating</p>
                 <div className="flex items-center">
                   <Star className="w-3.5 h-3.5 text-brand-orange fill-brand-orange mr-1" />
-                  <span className="text-sm font-bold text-gray-900">5.0</span>
+                  <span className="text-sm font-bold text-gray-900">{rating > 0 ? rating.toFixed(1) : '—'}</span>
                 </div>
               </div>
             </div>

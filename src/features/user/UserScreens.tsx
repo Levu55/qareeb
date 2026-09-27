@@ -10,7 +10,7 @@ import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore } from '../../store/useAppStore';
 import { Wrench, Calendar, Camera, Box, Lock, Zap, Droplets, Paintbrush, Truck, MapPin, Search, Star, Clock, ArrowRight, ShieldCheck, Phone, CheckCircle2, Menu, Bell, Home, PlayCircle, ClipboardList, CheckCircle, FileText, User, ShoppingBag, Heart, Tent, Scissors, Plus, ChevronRight, BookOpen, MonitorSmartphone, UserRoundCheck, Edit2, Tag } from 'lucide-react';
 import { SERVICE_CATEGORIES, DIGITAL_PAYMENT_THRESHOLD } from '../../config/businessLogic';
-import { createTask, findHelpers, createBooking, getTask, getMyBooking, updateBookingStatus, categoryName, avatarUrl, formatPrice, CURRENT_TASK_KEY, CURRENT_BOOKING_KEY, type HelperListing, type MyBooking, type TaskRecord } from '../../lib/marketplace';
+import { createTask, findHelpers, createBooking, getTask, getMyBooking, updateBookingStatus, submitReview, geocodeAddress, getBrowserPosition, osmEmbedUrl, formatDistance, formatEta, categoryName, avatarUrl, formatPrice, CURRENT_TASK_KEY, CURRENT_BOOKING_KEY, type Coordinates, type HelperListing, type MyBooking, type TaskRecord } from '../../lib/marketplace';
 import { supabase } from '../../lib/supabaseClient';
 import { getCnicStatus } from '../../lib/authHelpers';
 
@@ -222,6 +222,24 @@ export function PostTaskScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditingLocation, setIsEditingLocation] = useState(false);
   const [tempLocation, setTempLocation] = useState('');
+  const [taskCoords, setTaskCoords] = useState<Coordinates | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
+  // Device position is more precise than looking up the typed address, so it wins when provided
+  const [deviceCoords, setDeviceCoords] = useState<Coordinates | null>(null);
+  const [deviceLocationNote, setDeviceLocationNote] = useState<string | null>(null);
+
+  const useCurrentLocation = async () => {
+    setIsLocating(true);
+    setDeviceLocationNote(null);
+    const coords = await getBrowserPosition();
+    setIsLocating(false);
+    if (coords) {
+      setDeviceCoords(coords);
+      setDeviceLocationNote('Using your current location for the map and helper distance.');
+    } else {
+      setDeviceLocationNote('Location access is unavailable. The typed address will be used instead.');
+    }
+  };
 
   const selectedService = SERVICE_CATEGORIES.find(s => s.id === category);
 
@@ -274,6 +292,8 @@ export function PostTaskScreen() {
           category,
           location,
           femaleOnly: Boolean(selectedService?.femaleHelpersAvailable && femaleOnly),
+          latitude: taskCoords?.latitude ?? null,
+          longitude: taskCoords?.longitude ?? null,
         });
         localStorage.setItem(CURRENT_TASK_KEY, task.ID);
         localStorage.removeItem(CURRENT_BOOKING_KEY);
@@ -381,6 +401,9 @@ export function PostTaskScreen() {
                     <div className="flex items-start gap-3">
                       <MapPin className="w-6 h-6 text-brand-orange shrink-0 mt-0.5" />
                       <p className="text-lg font-bold text-gray-900">{location}</p>
+                      {location && !taskCoords && (
+                        <p className="text-xs text-gray-500 mt-1">We could not place this address on the map, so helper distance will not be shown.</p>
+                      )}
                     </div>
                   </div>
                   <button 
@@ -396,7 +419,7 @@ export function PostTaskScreen() {
                 </div>
                 <div className="w-full h-48 bg-gray-100 rounded-2xl overflow-hidden border border-gray-200 relative">
                   <iframe 
-                    src={location.toLowerCase().includes('karachi') ? "https://www.openstreetmap.org/export/embed.html?bbox=67.0%2C24.8%2C67.1%2C24.9&layer=mapnik&marker=24.86%2C67.0" : location.toLowerCase().includes('lahore') ? "https://www.openstreetmap.org/export/embed.html?bbox=74.3%2C31.5%2C74.4%2C31.6&layer=mapnik&marker=31.52%2C74.35" : "https://www.openstreetmap.org/export/embed.html?bbox=73.02%2C33.65%2C73.1%2C33.72&layer=mapnik&marker=33.6844%2C73.0479"} 
+                    src={taskCoords ? osmEmbedUrl(taskCoords) : location.toLowerCase().includes('karachi') ? "https://www.openstreetmap.org/export/embed.html?bbox=67.0%2C24.8%2C67.1%2C24.9&layer=mapnik&marker=24.86%2C67.0" : location.toLowerCase().includes('lahore') ? "https://www.openstreetmap.org/export/embed.html?bbox=74.3%2C31.5%2C74.4%2C31.6&layer=mapnik&marker=31.52%2C74.35" : "https://www.openstreetmap.org/export/embed.html?bbox=73.02%2C33.65%2C73.1%2C33.72&layer=mapnik&marker=33.6844%2C73.0479"} 
                     className="w-full h-full border-0 transition-all duration-500"
                     title="Service Location Map"
                   />
@@ -415,6 +438,15 @@ export function PostTaskScreen() {
                   icon={<Search className="w-5 h-5 text-gray-400" />}
                 />
                 {errors.location && <p className="text-red-500 text-sm mt-2">{errors.location}</p>}
+                <button
+                  type="button"
+                  onClick={useCurrentLocation}
+                  disabled={isLocating}
+                  className="mt-3 text-sm font-semibold text-brand-teal hover:underline disabled:opacity-50 flex items-center gap-1"
+                >
+                  <MapPin className="w-4 h-4" /> Use my current location
+                </button>
+                {deviceLocationNote && <p className="text-xs text-gray-500 mt-1">{deviceLocationNote}</p>}
                 <div className="w-full h-48 bg-gray-100 rounded-2xl overflow-hidden border border-gray-200 mt-4 relative">
                   <iframe 
                     src="https://www.openstreetmap.org/export/embed.html?bbox=73.02%2C33.65%2C73.1%2C33.72&layer=mapnik&marker=33.6844%2C73.0479" 
@@ -431,8 +463,14 @@ export function PostTaskScreen() {
                 </div>
                 <div className="flex gap-4 mt-6">
                   <Button variant="outline" className="flex-1" onClick={() => setIsEditingLocation(false)}>Cancel</Button>
-                  <Button className="flex-1" onClick={() => {
-                    setLocation(tempLocation);
+                  <Button className="flex-1" isLoading={isLocating} disabled={isLocating} onClick={async () => {
+                    const address = tempLocation.trim();
+                    setLocation(address);
+                    setTaskCoords(null);
+                    setIsLocating(true);
+                    const coords = deviceCoords ?? (address ? await geocodeAddress(address) : null);
+                    setTaskCoords(coords);
+                    setIsLocating(false);
                     setIsEditingLocation(false);
                   }}>Confirm Location</Button>
                 </div>
@@ -513,11 +551,12 @@ function toHelperCard(h: HelperListing) {
     photo: avatarUrl(h.full_name),
     verified: true,
     rating: rating > 0 ? rating.toFixed(1) : 'New',
-    reviews: 0,
+    reviews: Number(h.review_count) || 0,
     completedTasks: Number(h.completed_jobs) || 0,
     experience: null as string | null,
-    eta: null as string | null,
-    distance: null as string | null,
+    // Approximate: straight-line distance from the task address to the helper's last known position
+    eta: formatEta(h.distance_km),
+    distance: formatDistance(h.distance_km),
     skills: services.join(' • '),
     bio: services.length ? `Verified Qareeb helper offering ${services.join(', ')}.` : 'Verified Qareeb helper.',
   };
@@ -550,7 +589,7 @@ export function SelectHelperScreen() {
           navigate('/user/post', { replace: true });
           return;
         }
-        const listings = await findHelpers(task.Category, task['Female-only']);
+        const listings = await findHelpers(task.Category, task['Female-only'], task.Latitude, task.Longitude);
         setHelpers(listings.map(toHelperCard));
       } catch (err: any) {
         addToast(err?.message || 'Could not load helpers.', 'error');
@@ -865,6 +904,12 @@ export function TrackingScreen() {
     : dbStatus === 'Completed' ? 'completed'
     : 'on_way';
   const isClosed = dbStatus === 'Rejected' || dbStatus === 'Cancelled';
+  const taskPoint = booking?.task_latitude != null && booking?.task_longitude != null
+    ? { latitude: booking.task_latitude, longitude: booking.task_longitude }
+    : null;
+  // Approximate, from the helper's last shared position (null when unknown or older than 24h)
+  const eta = formatEta(booking?.helper_distance_km);
+  const distance = formatDistance(booking?.helper_distance_km);
   const canCancel = dbStatus === 'Pending' || dbStatus === 'Accepted';
 
   const selectedHelper = {
@@ -920,13 +965,13 @@ export function TrackingScreen() {
       <div className="flex-1 relative w-full h-full bg-gray-200 overflow-hidden pointer-events-none">
         {status === 'on_way' ? (
           <iframe 
-            src="https://www.openstreetmap.org/export/embed.html?bbox=73.01%2C33.64%2C73.11%2C33.73&layer=mapnik&marker=33.6844%2C73.0479" 
+            src={taskPoint ? osmEmbedUrl(taskPoint, 0.05) : "https://www.openstreetmap.org/export/embed.html?bbox=73.01%2C33.64%2C73.11%2C33.73&layer=mapnik&marker=33.6844%2C73.0479"}
             className="w-full h-full border-0 absolute inset-0 transform scale-110 transition-all duration-1000"
             title="Tracking Map"
           />
         ) : (
           <iframe 
-            src="https://www.openstreetmap.org/export/embed.html?bbox=73.04%2C33.67%2C73.06%2C33.69&layer=mapnik&marker=33.6844%2C73.0479" 
+            src={taskPoint ? osmEmbedUrl(taskPoint, 0.01) : "https://www.openstreetmap.org/export/embed.html?bbox=73.04%2C33.67%2C73.06%2C33.69&layer=mapnik&marker=33.6844%2C73.0479"}
             className="w-full h-full border-0 absolute inset-0 transform scale-125 transition-all duration-1000"
             title="Tracking Map"
           />
@@ -959,6 +1004,7 @@ export function TrackingScreen() {
            </div>
            <div className="flex-1">
              <h2 className="text-xl font-bold text-gray-900">{getStatusText()}</h2>
+             {(dbStatus === 'Accepted' || dbStatus === 'On-the-way') && eta && <p className="text-brand-orange font-bold text-sm mt-1">Estimated arrival: ~{eta} ({distance} away)</p>}
              {status === 'arrived' && <p className="text-brand-teal font-bold text-sm mt-1">Ready to start.</p>}
              {status === 'in_progress' && <p className="text-brand-orange font-bold text-sm mt-1">Working securely.</p>}
            </div>
@@ -1066,9 +1112,20 @@ export function PaymentRatingScreen() {
     }, 2000);
   };
 
-  const handleRatingSubmit = () => {
-    if (rating === 0) return;
-    setStep(4);
+  const [isSavingReview, setIsSavingReview] = useState(false);
+  const addToast = useAppStore(state => state.addToast);
+
+  const handleRatingSubmit = async () => {
+    if (rating === 0 || !completedBooking) return;
+    setIsSavingReview(true);
+    try {
+      await submitReview(completedBooking.booking_id, rating, feedback);
+      setStep(4);
+    } catch (err: any) {
+      addToast(err?.message || 'Could not save your review.', 'error');
+    } finally {
+      setIsSavingReview(false);
+    }
   };
 
   return (
@@ -1193,7 +1250,7 @@ export function PaymentRatingScreen() {
                 onChange={(e) => setFeedback(e.target.value)}
               />
 
-              <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={handleRatingSubmit} disabled={rating === 0}>
+              <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={handleRatingSubmit} disabled={rating === 0 || isSavingReview || !completedBooking} isLoading={isSavingReview}>
                 Submit Feedback
               </Button>
             </div>
