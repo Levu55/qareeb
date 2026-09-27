@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
 import { SERVICE_CATEGORIES } from '../../config/businessLogic';
@@ -7,6 +7,7 @@ import { useAppStore } from '../../store/useAppStore';
 import { ArrowLeft, CheckCircle2, ShieldCheck, Upload } from 'lucide-react';
 import { supabase } from '../../lib/supabaseClient';
 import { normalizePhoneNumber, syncUserProfile, uploadCNICDocument, validateCnicImage, CNIC_ALLOWED_TYPES } from '../../lib/authHelpers';
+import { getMyHelperRecord } from '../../lib/marketplace';
 
 export function BecomeHelperScreen() {
   const navigate = useNavigate();
@@ -18,6 +19,17 @@ export function BecomeHelperScreen() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Approved users only need a new CNIC photo if they choose to upload one
+  const cnicRequired = cnicStatus !== 'approved';
+
+  // Existing helpers start with their saved services selected
+  useEffect(() => {
+    getMyHelperRecord()
+      .then(record => {
+        if (record?.Categories?.length) setSelectedServices(record.Categories);
+      })
+      .catch(() => { /* not a helper yet */ });
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,7 +43,7 @@ export function BecomeHelperScreen() {
       return;
     }
 
-    if (!cnicFront) {
+    if (!cnicFront && cnicRequired) {
       setSubmitError('Please upload a photo of your CNIC front.');
       return;
     }
@@ -44,12 +56,14 @@ export function BecomeHelperScreen() {
       }
 
       // CNIC photo goes to the private bucket under the user's own folder
-      const upload = await uploadCNICDocument(cnicFront, user.id, 'front');
-      if (!upload.success) {
-        throw new Error(upload.error || 'Failed to upload your CNIC photo.');
+      if (cnicFront) {
+        const upload = await uploadCNICDocument(cnicFront, user.id, 'front');
+        if (!upload.success) {
+          throw new Error(upload.error || 'Failed to upload your CNIC photo.');
+        }
       }
 
-      if (cnicStatus !== 'approved') {
+      if (cnicFront && cnicStatus !== 'approved') {
         const { error: metaError } = await supabase.auth.updateUser({
           data: { cnic_status: 'pending', cnic_submitted_at: new Date().toISOString() },
         });

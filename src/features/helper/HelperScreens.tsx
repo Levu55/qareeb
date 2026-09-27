@@ -188,6 +188,21 @@ export function HelperHome() {
           </>
         )}
 
+        {verifyStatus !== null && (verifyStatus !== 'Approved' || myServices.length === 0) && (
+          <Card className="p-4 mt-6 border-l-4 border-l-brand-orange">
+            <p className="text-sm text-gray-700 font-medium">
+              {verifyStatus === 'Rejected'
+                ? 'Your CNIC verification was rejected. Upload a new CNIC photo to be reviewed again.'
+                : verifyStatus !== 'Approved'
+                  ? `Your helper verification is ${verifyStatus.toLowerCase()}. Customers can book you once an admin approves it.`
+                  : 'Choose the services you offer so customers can find you.'}
+            </p>
+            <button onClick={() => navigate('/helper/become-helper')} className="mt-2 text-sm font-bold text-brand-orange hover:underline">
+              Update services & CNIC
+            </button>
+          </Card>
+        )}
+
         <h2 className="text-lg font-bold text-gray-900 mb-4 mt-8">Your Stats</h2>
         <div className="grid grid-cols-2 gap-4">
           <Card className="p-4 text-center hover:-translate-y-1 hover:shadow-md transition-all duration-300">
@@ -257,7 +272,8 @@ export function HelperHome() {
             </Card>
           )) : (
             <div className="col-span-2 text-center py-6 text-gray-500 text-sm border-2 border-dashed border-gray-200 rounded-2xl">
-              No services selected. Update your profile.
+              No services selected.{' '}
+              <button onClick={() => navigate('/helper/become-helper')} className="font-bold text-brand-orange hover:underline">Choose services</button>
             </div>
           )}
         </div>

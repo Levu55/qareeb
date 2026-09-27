@@ -169,6 +169,8 @@ export default function App() {
           </Route>
           
           <Route path="active-job" element={<ActiveJobScreen />} />
+          {/* Existing helpers update services or re-submit CNIC after a rejection */}
+          <Route path="become-helper" element={<BecomeHelperScreen />} />
         </Route>
 
         {/* Admin/SuperAdmin Flow */}
