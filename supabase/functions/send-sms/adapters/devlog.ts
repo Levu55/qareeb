@@ -45,8 +45,9 @@ export class DevLogAdapter implements SMSAdapter {
       };
     }
 
+    // OTP first so it stays visible when the dashboard truncates long log lines
     console.log(
-      `[Qareeb SMS Hook][DEV LOG MODE] NO SMS WAS SENT. OTP for test number ${recipient.slice(0, 5)}****${recipient.slice(-2)}: ${otp}`
+      `DEV OTP ${otp} for ${recipient.slice(0, 5)}****${recipient.slice(-2)} [Qareeb SMS Hook][DEV LOG MODE] NO SMS WAS SENT`
     );
 
     return {
