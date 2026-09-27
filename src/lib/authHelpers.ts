@@ -101,7 +101,7 @@ export async function syncUserProfile(
   userId: string,
   phone: string,
   role: Role,
-  metadata?: { full_name?: string; referral_code?: string }
+  metadata?: { full_name?: string; referral_code?: string; categories?: string[] }
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const { error: profileError } = await supabase
@@ -124,6 +124,8 @@ export async function syncUserProfile(
         .upsert({
           ID: userId,
           Rating: 5.0,
+          // Only sent when the caller chose services, so an existing selection is not wiped
+          ...(metadata?.categories ? { Categories: metadata.categories } : {}),
         }, { onConflict: 'ID' });
 
       if (helperError) {

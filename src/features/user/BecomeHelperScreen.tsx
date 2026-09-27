@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
+import { SERVICE_CATEGORIES } from '../../config/businessLogic';
 import { Input } from '../../components/ui/Input';
 import { useAppStore } from '../../store/useAppStore';
 import { ArrowLeft, CheckCircle2, ShieldCheck, Upload } from 'lucide-react';
@@ -21,6 +22,10 @@ export function BecomeHelperScreen() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError(null);
+    if (step === 2 && selectedServices.length === 0) {
+      setSubmitError('Please choose at least one service you can offer.');
+      return;
+    }
     if (step < 3) {
       setStep(step + 1);
       return;
@@ -55,6 +60,7 @@ export function BecomeHelperScreen() {
       // Creates the helper record (verification stays Pending until an admin approves)
       const sync = await syncUserProfile(user.id, normalizePhoneNumber(phone || user.phone || ''), 'helper', {
         full_name: fullName.trim(),
+        categories: selectedServices,
       });
       if (!sync.success) {
         throw new Error(sync.error || 'Failed to create your helper profile.');
@@ -130,7 +136,7 @@ export function BecomeHelperScreen() {
               <p className="text-gray-500 mb-6 text-sm">What kind of tasks can you help with?</p>
               
               <div className="space-y-3">
-                 {['Home & Cleaning', 'Errands & Delivery', 'Moving & Lifting', 'Repairs & Technical', 'Digital & Admin', 'Event Help'].map((skill, idx) => (
+                 {SERVICE_CATEGORIES.map(({ id: skill, name }, idx) => (
                    <label key={idx} className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-colors ${selectedServices.includes(skill) ? 'border-brand-teal bg-teal-50/50' : 'border-gray-100 hover:border-brand-teal/30'}`}>
                      <input 
                        type="checkbox" 
@@ -141,10 +147,13 @@ export function BecomeHelperScreen() {
                          else setSelectedServices(selectedServices.filter(s => s !== skill));
                        }} 
                      />
-                     <span className="font-bold text-gray-700">{skill}</span>
+                     <span className="font-bold text-gray-700">{name}</span>
                    </label>
                  ))}
               </div>
+              {submitError && (
+                <div className="mt-4 p-3 bg-red-50 text-red-700 text-sm rounded-xl">{submitError}</div>
+              )}
             </div>
           )}
 

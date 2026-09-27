@@ -145,3 +145,41 @@ Deno.test('pending logic: re-submission after rejection returns to the queue', (
 Deno.test('latestDocuments ignores unrelated files', () => {
   assertEquals(latestDocuments([{ name: 'diagnostic_1.png' }, { name: 'selfie_1.jpg' }]), { selfie: 'selfie_1.jpg' });
 });
+
+Deno.test('revoke: returns an approved submission to the review queue', async () => {
+  const { repo, users, helperStatus } = makeRepo();
+  assertEquals((await call(repo, 'jwt-admin', { action: 'review', userId: HELPER, decision: 'approved' })).status, 200);
+  assertEquals(helperStatus[HELPER], 'Approved');
+
+  let list = await call(repo, 'jwt-admin', { action: 'list' });
+  assert(list.body.approved.some((s: { userId: string }) => s.userId === HELPER), 'approved list includes helper');
+  assert(!list.body.submissions.some((s: { userId: string }) => s.userId === HELPER), 'no longer pending');
+
+  const r = await call(repo, 'jwt-admin', { action: 'revoke', userId: HELPER, note: 'Approved by mistake' });
+  assertEquals(r.status, 200);
+  assertEquals(r.body.decision, 'revoked');
+  assertEquals(helperStatus[HELPER], 'Pending', 'helper verification back to Pending');
+  const meta = users.get(HELPER)!.app_metadata!;
+  assertEquals(meta.cnic_status, null);
+  assertEquals(meta.cnic_revoked_by, ADMIN);
+  assertEquals(meta.provider, 'phone', 'existing app_metadata preserved');
+
+  list = await call(repo, 'jwt-admin', { action: 'list' });
+  assert(list.body.submissions.some((s: { userId: string }) => s.userId === HELPER), 'back in pending queue');
+  assert(!list.body.approved.some((s: { userId: string }) => s.userId === HELPER), 'removed from approved list');
+
+  // ...and can now be rejected
+  const rej = await call(repo, 'jwt-admin', { action: 'review', userId: HELPER, decision: 'rejected', note: 'Unreadable' });
+  assertEquals(rej.status, 200);
+  assertEquals(helperStatus[HELPER], 'Rejected');
+});
+
+Deno.test('revoke: validation and permissions', async () => {
+  const { repo } = makeRepo();
+  await call(repo, 'jwt-admin', { action: 'review', userId: USER, decision: 'approved' });
+  assertEquals((await call(repo, 'jwt-admin', { action: 'revoke', userId: USER })).status, 400, 'reason required');
+  assertEquals((await call(repo, 'jwt-admin', { action: 'revoke', userId: HELPER, note: 'x' })).status, 409, 'not approved');
+  assertEquals((await call(repo, 'jwt-admin', { action: 'revoke', userId: ADMIN, note: 'x' })).status, 403, 'self');
+  assertEquals((await call(repo, 'jwt-user', { action: 'revoke', userId: USER, note: 'x' })).status, 403, 'non-admin');
+  assertEquals((await call(repo, 'jwt-admin', { action: 'revoke', userId: 'bad', note: 'x' })).status, 400, 'bad id');
+});

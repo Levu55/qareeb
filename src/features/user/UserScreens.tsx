@@ -9,7 +9,10 @@ import { Input } from '../../components/ui/Input';
 import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore } from '../../store/useAppStore';
 import { Wrench, Calendar, Camera, Box, Lock, Zap, Droplets, Paintbrush, Truck, MapPin, Search, Star, Clock, ArrowRight, ShieldCheck, Phone, CheckCircle2, Menu, Bell, Home, PlayCircle, ClipboardList, CheckCircle, FileText, User, ShoppingBag, Heart, Tent, Scissors, Plus, ChevronRight, BookOpen, MonitorSmartphone, UserRoundCheck, Edit2, Tag } from 'lucide-react';
-import { SERVICE_CATEGORIES, DEMO_HELPERS, DIGITAL_PAYMENT_THRESHOLD } from '../../config/businessLogic';
+import { SERVICE_CATEGORIES, DIGITAL_PAYMENT_THRESHOLD } from '../../config/businessLogic';
+import { createTask, findHelpers, createBooking, getTask, getMyBooking, updateBookingStatus, categoryName, avatarUrl, formatPrice, CURRENT_TASK_KEY, CURRENT_BOOKING_KEY, type HelperListing, type MyBooking, type TaskRecord } from '../../lib/marketplace';
+import { supabase } from '../../lib/supabaseClient';
+import { getCnicStatus } from '../../lib/authHelpers';
 
 const SafetyShield = () => (
   <div className="bg-brand-teal-light text-brand-teal p-3 rounded-xl flex items-start text-sm mb-6 font-medium">
@@ -215,7 +218,8 @@ export function PostTaskScreen() {
   const [femaleOnly, setFemaleOnly] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   
-  const [location, setLocation] = useState('123 Main Street, Islamabad');
+  const [location, setLocation] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditingLocation, setIsEditingLocation] = useState(false);
   const [tempLocation, setTempLocation] = useState('');
 
@@ -230,7 +234,7 @@ export function PostTaskScreen() {
     }
   }, [selectedService, budgetStr]);
 
-  const nextStep = () => {
+  const nextStep = async () => {
     const newErrors: Record<string, string> = {};
     if (step === 1 && !category) {
       newErrors.category = 'Please select a category first.';
@@ -240,6 +244,11 @@ export function PostTaskScreen() {
     if (step === 2) {
       if (!title.trim()) newErrors.title = 'Title is required.';
       if (!description.trim()) newErrors.description = 'Description is required.';
+    }
+    if (step === 3 && !location.trim()) {
+      newErrors.location = 'Please add the address where you need help.';
+      setTempLocation(location);
+      setIsEditingLocation(true);
     }
     if (step === 4) {
       const budgetVal = parseInt(budgetStr) || 0;
@@ -256,9 +265,24 @@ export function PostTaskScreen() {
     setErrors({});
     
     if (step === 4) {
-      localStorage.setItem('qareeb_demo_amount', budgetStr);
-      localStorage.setItem('qareeb_female_only', femaleOnly ? 'true' : 'false');
-      navigate('/user/select-helper');
+      setIsSubmitting(true);
+      try {
+        const task = await createTask({
+          title,
+          description,
+          price: parseInt(budgetStr) || 0,
+          category,
+          location,
+          femaleOnly: Boolean(selectedService?.femaleHelpersAvailable && femaleOnly),
+        });
+        localStorage.setItem(CURRENT_TASK_KEY, task.ID);
+        localStorage.removeItem(CURRENT_BOOKING_KEY);
+        navigate('/user/select-helper');
+      } catch (err: any) {
+        setErrors({ submit: err?.message || 'Could not save your task. Please try again.' });
+      } finally {
+        setIsSubmitting(false);
+      }
     } else {
       setStep(s => s + 1);
     }
@@ -390,6 +414,7 @@ export function PostTaskScreen() {
                   onChange={(e) => setTempLocation(e.target.value)}
                   icon={<Search className="w-5 h-5 text-gray-400" />}
                 />
+                {errors.location && <p className="text-red-500 text-sm mt-2">{errors.location}</p>}
                 <div className="w-full h-48 bg-gray-100 rounded-2xl overflow-hidden border border-gray-200 mt-4 relative">
                   <iframe 
                     src="https://www.openstreetmap.org/export/embed.html?bbox=73.02%2C33.65%2C73.1%2C33.72&layer=mapnik&marker=33.6844%2C73.0479" 
@@ -397,8 +422,7 @@ export function PostTaskScreen() {
                     title="Map Preview"
                   />
                   <div className="absolute inset-0 bg-transparent cursor-crosshair" onClick={() => {
-                     /* Simulated map click */
-                     setTempLocation('Selected on Map, Islamabad');
+                     /* Map picking is not available yet; the typed address is used */
                   }}></div>
                   <div className="absolute top-2 left-2 bg-white/90 px-3 py-1.5 rounded-lg text-xs font-bold text-gray-700 shadow-sm z-10 flex items-center gap-2">
                     <MapPin className="w-3.5 h-3.5 text-brand-orange" />
@@ -462,10 +486,12 @@ export function PostTaskScreen() {
       
       <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-gray-100 z-40">
         <div className="max-w-2xl mx-auto">
+          {errors.submit && <p className="text-red-500 text-sm mb-2 text-center">{errors.submit}</p>}
           <Button 
             className="w-full shadow-lg h-[54px] text-lg rounded-2xl" 
             onClick={nextStep}
-            disabled={isEditingLocation}
+            disabled={isEditingLocation || isSubmitting}
+            isLoading={isSubmitting}
           >
             {step === 4 ? 'Continue to Match' : 'Next Step'}
           </Button>
@@ -477,6 +503,26 @@ export function PostTaskScreen() {
 
 
 
+/** Maps a real helper listing onto the fields the helper cards render. No invented data. */
+function toHelperCard(h: HelperListing) {
+  const services = (h.categories || []).map(categoryName).filter(Boolean);
+  const rating = Number(h.rating) || 0;
+  return {
+    id: h.helper_id,
+    name: h.full_name || 'Qareeb Helper',
+    photo: avatarUrl(h.full_name),
+    verified: true,
+    rating: rating > 0 ? rating.toFixed(1) : 'New',
+    reviews: 0,
+    completedTasks: Number(h.completed_jobs) || 0,
+    experience: null as string | null,
+    eta: null as string | null,
+    distance: null as string | null,
+    skills: services.join(' • '),
+    bio: services.length ? `Verified Qareeb helper offering ${services.join(', ')}.` : 'Verified Qareeb helper.',
+  };
+}
+
 export function SelectHelperScreen() {
   const navigate = useNavigate();
   const [selectedHelper, setSelectedHelper] = useState<any>(null);
@@ -484,21 +530,56 @@ export function SelectHelperScreen() {
   const [showCNIC, setShowCNIC] = useState(false);
   const cnicStatus = useAppStore(state => state.cnicStatus);
   const isVerified = cnicStatus === 'approved';
-  
-  const category = localStorage.getItem('qareeb_selected_category') || '';
-  const isFemaleOnly = localStorage.getItem('qareeb_female_only') === 'true';
-  let helpers = DEMO_HELPERS.filter(h => 
-    (!category || h.categories?.includes(category)) && 
-    (!isFemaleOnly || h.female)
-  );
+  const setCnicStatus = useAppStore(state => state.setCnicStatus);
+  const addToast = useAppStore(state => state.addToast);
+  const [helpers, setHelpers] = useState<any[]>([]);
+  const [isLoadingHelpers, setIsLoadingHelpers] = useState(true);
+  const [isBooking, setIsBooking] = useState(false);
+  const taskId = localStorage.getItem(CURRENT_TASK_KEY);
 
-  const handleConfirmBooking = () => {
-    if (!isVerified) {
-      setShowCNIC(true);
+  useEffect(() => {
+    if (!taskId) {
+      navigate('/user/post', { replace: true });
       return;
     }
-    localStorage.setItem('qareeb_selected_helper', JSON.stringify(selectedHelper));
-    navigate('/user/tracking');
+    (async () => {
+      try {
+        const task = await getTask(taskId);
+        if (!task || task.Status !== 'Open') {
+          addToast('This task is no longer open. Please post a new task.', 'info');
+          navigate('/user/post', { replace: true });
+          return;
+        }
+        const listings = await findHelpers(task.Category, task['Female-only']);
+        setHelpers(listings.map(toHelperCard));
+      } catch (err: any) {
+        addToast(err?.message || 'Could not load helpers.', 'error');
+      } finally {
+        setIsLoadingHelpers(false);
+      }
+    })();
+  }, [taskId]);
+
+  const handleConfirmBooking = async () => {
+    if (!selectedHelper || !taskId || isBooking) return;
+    setIsBooking(true);
+    try {
+      // Refresh so an admin's recent CNIC approval is included in the session token
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      const status = getCnicStatus(refreshed.user);
+      setCnicStatus(status);
+      if (status !== 'approved') {
+        setShowCNIC(true);
+        return;
+      }
+      const bookingId = await createBooking(taskId, selectedHelper.id);
+      localStorage.setItem(CURRENT_BOOKING_KEY, bookingId);
+      navigate('/user/tracking');
+    } catch (err: any) {
+      addToast(err?.message || 'Could not create the booking.', 'error');
+    } finally {
+      setIsBooking(false);
+    }
   };
 
   if (showCNIC) {
@@ -604,11 +685,12 @@ export function SelectHelperScreen() {
                  <p className="text-xs text-gray-500 font-medium">Tasks Done</p>
                </div>
                <div className="text-center">
-                 <div className="text-gray-900 font-bold text-xl mb-1">{selectedHelper.experience}</div>
+                 <div className="text-gray-900 font-bold text-xl mb-1">{selectedHelper.experience || '—'}</div>
                  <p className="text-xs text-gray-500 font-medium">Experience</p>
                </div>
             </div>
 
+            {selectedHelper.eta && (
             <div className="bg-blue-50/50 border border-blue-100 rounded-2xl p-4 flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
@@ -623,6 +705,7 @@ export function SelectHelperScreen() {
                 <span className="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-1 rounded-md">{selectedHelper.distance} away</span>
               </div>
             </div>
+            )}
 
             <div className="space-y-6">
               <div>
@@ -645,7 +728,7 @@ export function SelectHelperScreen() {
         <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-gray-100 z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
           <div className="max-w-2xl mx-auto flex items-center gap-4">
             <Button variant="outline" className="flex-1 h-[54px] rounded-2xl border-2" onClick={() => setShowProfile(false)}>Back</Button>
-            <Button className="flex-[2] h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking}>
+            <Button className="flex-[2] h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking} isLoading={isBooking} disabled={isBooking}>
               Confirm Booking
             </Button>
           </div>
@@ -662,7 +745,7 @@ export function SelectHelperScreen() {
         </button>
         <div>
           <h1 className="text-xl font-bold text-gray-900">Choose Your Helper</h1>
-          <p className="text-xs text-gray-500 font-medium">{helpers.length} helpers available nearby</p>
+          <p className="text-xs text-gray-500 font-medium">{isLoadingHelpers ? 'Finding helpers…' : `${helpers.length} helpers available`}</p>
         </div>
       </div>
 
@@ -670,7 +753,7 @@ export function SelectHelperScreen() {
         <SafetyShield />
         
         <div className="space-y-4">
-          {helpers.length === 0 && (
+          {!isLoadingHelpers && helpers.length === 0 && (
             <div className="text-center py-12 px-4 bg-white rounded-3xl border border-gray-100">
               <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <Search className="w-8 h-8 text-gray-400" />
@@ -705,10 +788,10 @@ export function SelectHelperScreen() {
                       <span className="font-bold text-sm text-brand-orange">{helper.rating}</span>
                     </div>
                   </div>
-                  <p className="text-xs text-gray-500 font-medium mt-1">{helper.completedTasks} tasks • {helper.experience} exp</p>
+                  <p className="text-xs text-gray-500 font-medium mt-1">{helper.completedTasks} tasks{helper.experience ? ` • ${helper.experience} exp` : ''}</p>
                   <div className="flex items-center gap-2 mt-3">
-                    <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><Clock className="w-3 h-3"/> {helper.eta}</span>
-                    <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><MapPin className="w-3 h-3"/> {helper.distance}</span>
+                    {helper.eta && <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><Clock className="w-3 h-3"/> {helper.eta}</span>}
+                    {helper.distance && <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><MapPin className="w-3 h-3"/> {helper.distance}</span>}
                   </div>
                 </div>
               </div>
@@ -728,7 +811,7 @@ export function SelectHelperScreen() {
       {selectedHelper && !showProfile && (
         <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-gray-100 z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] animate-in slide-in-from-bottom-12">
           <div className="max-w-2xl mx-auto">
-            <Button className="w-full h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking}>
+            <Button className="w-full h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking} isLoading={isBooking} disabled={isBooking}>
               Confirm & Continue
             </Button>
           </div>
@@ -742,31 +825,82 @@ export function SelectHelperScreen() {
 
 export function TrackingScreen() {
   const navigate = useNavigate();
-  const [status, setStatus] = useState<'on_way' | 'arrived' | 'in_progress' | 'completed'>('on_way');
-  const storedHelper = localStorage.getItem('qareeb_selected_helper');
-  const selectedHelper = storedHelper ? JSON.parse(storedHelper) : DEMO_HELPERS[0];
+  const addToast = useAppStore(state => state.addToast);
+  const bookingId = localStorage.getItem(CURRENT_BOOKING_KEY);
+  const [booking, setBooking] = useState<MyBooking | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  // Poll the booking so the customer sees the helper's updates
+  useEffect(() => {
+    if (!bookingId) {
+      navigate('/user', { replace: true });
+      return;
+    }
+    let active = true;
+    const load = async () => {
+      try {
+        const latest = await getMyBooking(bookingId);
+        if (!active) return;
+        if (!latest) {
+          addToast('Booking not found.', 'error');
+          navigate('/user', { replace: true });
+          return;
+        }
+        setBooking(latest);
+      } catch (err) {
+        console.warn('Booking refresh failed:', err);
+      }
+    };
+    load();
+    const timer = setInterval(load, 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, [bookingId]);
+
+  const dbStatus = booking?.status;
+  // The screen's four visual states; waiting/accepted are shown on the "on the way" view
+  const status: 'on_way' | 'arrived' | 'in_progress' | 'completed' =
+    dbStatus === 'Arrived' ? 'arrived'
+    : dbStatus === 'In-progress' ? 'in_progress'
+    : dbStatus === 'Completed' ? 'completed'
+    : 'on_way';
+  const isClosed = dbStatus === 'Rejected' || dbStatus === 'Cancelled';
+  const canCancel = dbStatus === 'Pending' || dbStatus === 'Accepted';
+
+  const selectedHelper = {
+    name: booking?.counterpart_name || 'Your helper',
+    photo: avatarUrl(booking?.counterpart_name),
+  };
 
   useEffect(() => {
-    let timer1: any, timer2: any, timer3: any;
-    if (status === 'on_way') {
-      timer1 = setTimeout(() => setStatus('arrived'), 4000);
-    } else if (status === 'arrived') {
-      timer2 = setTimeout(() => setStatus('in_progress'), 3000);
-    } else if (status === 'in_progress') {
-      timer3 = setTimeout(() => setStatus('completed'), 5000);
-    } else if (status === 'completed') {
-      setTimeout(() => navigate('/user/payment'), 1500);
+    if (dbStatus === 'Completed') {
+      const timer = setTimeout(() => navigate('/user/payment'), 1500);
+      return () => clearTimeout(timer);
     }
-    return () => { clearTimeout(timer1); clearTimeout(timer2); clearTimeout(timer3); };
-  }, [status, navigate]);
+  }, [dbStatus, navigate]);
 
-  const handleCancel = () => {
-    if (window.confirm("Are you sure you want to cancel this request?")) {
-      navigate('/user');
+  const handleCancel = async () => {
+    if (!booking) return;
+    setIsCancelling(true);
+    try {
+      await updateBookingStatus(booking.booking_id, 'Cancelled');
+      setBooking({ ...booking, status: 'Cancelled' });
+      addToast('Booking cancelled.', 'info');
+    } catch (err: any) {
+      addToast(err?.message || 'Could not cancel the booking.', 'error');
+    } finally {
+      setIsCancelling(false);
+      setConfirmCancel(false);
     }
   };
 
   const getStatusText = () => {
+    const firstName = selectedHelper.name.split(' ')[0];
+    if (!booking) return 'Loading booking…';
+    if (dbStatus === 'Pending') return `Waiting for ${firstName} to accept`;
+    if (dbStatus === 'Accepted') return `${firstName} accepted your request`;
+    if (dbStatus === 'Rejected') return `${firstName} declined this request`;
+    if (dbStatus === 'Cancelled') return 'Booking cancelled';
     switch (status) {
       case 'on_way': return `${selectedHelper.name.split(' ')[0]} is on the way`;
       case 'arrived': return `${selectedHelper.name.split(' ')[0]} has arrived`;
@@ -825,7 +959,6 @@ export function TrackingScreen() {
            </div>
            <div className="flex-1">
              <h2 className="text-xl font-bold text-gray-900">{getStatusText()}</h2>
-             {status === 'on_way' && <p className="text-brand-orange font-bold text-sm mt-1">Estimated arrival: 8 min</p>}
              {status === 'arrived' && <p className="text-brand-teal font-bold text-sm mt-1">Ready to start.</p>}
              {status === 'in_progress' && <p className="text-brand-orange font-bold text-sm mt-1">Working securely.</p>}
            </div>
@@ -851,10 +984,29 @@ export function TrackingScreen() {
           </div>
         </div>
 
-        {status === 'on_way' && (
+        {canCancel && !confirmCancel && (
           <div className="mt-8 flex gap-4">
-            <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" onClick={handleCancel}>Cancel Request</Button>
+            <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" onClick={() => setConfirmCancel(true)}>Cancel Request</Button>
             <Button variant="outline" className="flex-1">Edit Request</Button>
+          </div>
+        )}
+
+        {canCancel && confirmCancel && (
+          <div className="mt-8">
+            <p className="text-sm text-gray-600 font-medium mb-3 text-center">Are you sure you want to cancel this request?</p>
+            <div className="flex gap-4">
+              <Button variant="outline" className="flex-1" disabled={isCancelling} onClick={() => setConfirmCancel(false)}>Keep Booking</Button>
+              <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" isLoading={isCancelling} disabled={isCancelling} onClick={handleCancel}>Yes, Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        {isClosed && (
+          <div className="mt-8 flex gap-4">
+            {dbStatus === 'Rejected' && (
+              <Button className="flex-1" onClick={() => { localStorage.removeItem(CURRENT_BOOKING_KEY); navigate('/user/select-helper'); }}>Choose Another Helper</Button>
+            )}
+            <Button variant="outline" className="flex-1" onClick={() => { localStorage.removeItem(CURRENT_BOOKING_KEY); navigate('/user'); }}>Back to Home</Button>
           </div>
         )}
       </div>
@@ -867,14 +1019,21 @@ export function TrackingScreen() {
 export function PaymentRatingScreen() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
-  const storedHelper = localStorage.getItem('qareeb_selected_helper');
-  const selectedHelper = storedHelper ? JSON.parse(storedHelper) : DEMO_HELPERS[0];
+  // Helper and amount come from the booking that was just completed
+  const [completedBooking, setCompletedBooking] = useState<MyBooking | null>(null);
+  useEffect(() => {
+    const id = localStorage.getItem(CURRENT_BOOKING_KEY);
+    if (id) getMyBooking(id).then(setCompletedBooking).catch(err => console.warn('Booking load failed:', err));
+  }, []);
+  const selectedHelper = {
+    name: completedBooking?.counterpart_name || 'Helper',
+    photo: avatarUrl(completedBooking?.counterpart_name),
+  };
   const [paymentMethod, setPaymentMethod] = useState('');
   const [promoCode, setPromoCode] = useState('');
   const [discount, setDiscount] = useState(0);
   const [promoApplied, setPromoApplied] = useState(false);
-  const amountStr = localStorage.getItem('qareeb_demo_amount') || '0';
-  const amount = parseInt(amountStr, 10);
+  const amount = Number(completedBooking?.price) || 0;
   const isCashDisabled = amount > 1500;
   
   // Auto-select easypaisa if cash is disabled and nothing is selected

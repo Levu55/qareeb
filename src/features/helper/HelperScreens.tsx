@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
@@ -7,6 +7,7 @@ import { MapPin, Navigation as NavIcon, Clock, CheckCircle2, AlertTriangle, Brie
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { CATEGORIES } from '../../data/services';
 import { useAppStore } from '../../store/useAppStore';
+import { getMyBookings, getMyBooking, getMyHelperRecord, setMyAvailability, updateBookingStatus, categoryName, formatPrice, CURRENT_BOOKING_KEY, type MyBooking } from '../../lib/marketplace';
 
 
 
@@ -23,8 +24,63 @@ const earningsData = [
 export function HelperHome() {
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const [isAvailable, setIsAvailable] = useState(true);
+  const [isAvailable, setIsAvailable] = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState<string | null>(null);
+  const [requests, setRequests] = useState<MyBooking[]>([]);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const { helperServices } = useAppStore();
+  const addToast = useAppStore(state => state.addToast);
+
+  // Availability and verification come from the helper record
+  useEffect(() => {
+    getMyHelperRecord()
+      .then(record => {
+        setIsAvailable(Boolean(record?.['Is-available']));
+        setVerifyStatus(record?.['Verify-status'] ?? null);
+      })
+      .catch(err => addToast(err?.message || 'Could not load your helper profile.', 'error'));
+  }, []);
+
+  // Pending requests assigned to this helper, refreshed while available
+  useEffect(() => {
+    if (!isAvailable) return;
+    let active = true;
+    const load = () => getMyBookings()
+      .then(rows => active && setRequests(rows.filter(r => r.my_role === 'helper' && r.status === 'Pending')))
+      .catch(err => console.warn('Request refresh failed:', err));
+    load();
+    const timer = setInterval(load, 10000);
+    return () => { active = false; clearInterval(timer); };
+  }, [isAvailable]);
+
+  const toggleAvailability = async () => {
+    const next = !isAvailable;
+    setIsAvailable(next);
+    try {
+      await setMyAvailability(next);
+    } catch (err: any) {
+      setIsAvailable(!next);
+      addToast(err?.message || 'Could not update availability.', 'error');
+    }
+  };
+
+  const respond = async (request: MyBooking, accept: boolean) => {
+    setBusyId(request.booking_id);
+    try {
+      await updateBookingStatus(request.booking_id, accept ? 'Accepted' : 'Rejected');
+      setRequests(current => current.filter(r => r.booking_id !== request.booking_id));
+      if (accept) {
+        localStorage.setItem(CURRENT_BOOKING_KEY, request.booking_id);
+        navigate('/helper/active-job');
+      } else {
+        addToast('Request declined.', 'info');
+      }
+    } catch (err: any) {
+      addToast(err?.message || 'Could not update the request.', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   return (
     <div className="flex-1 bg-gray-50 flex flex-col pb-24 h-full">
@@ -63,7 +119,7 @@ export function HelperHome() {
           </div>
           <div className="flex items-center gap-2">
             <button 
-              onClick={() => setIsAvailable(!isAvailable)}
+              onClick={toggleAvailability}
               className={`w-14 h-8 rounded-full transition-colors relative ${isAvailable ? 'bg-brand-orange' : 'bg-gray-500'}`}
             >
               <div className={`w-6 h-6 bg-white rounded-full absolute top-1 transition-transform ${isAvailable ? 'translate-x-7' : 'translate-x-1'}`}></div>
@@ -76,31 +132,39 @@ export function HelperHome() {
         {isAvailable && (
           <>
             <h2 className="text-lg font-bold text-gray-900 mb-4">Incoming Requests</h2>
-            <Card className="border-l-4 border-l-brand-orange shadow-md relative overflow-hidden mb-4 hover:-translate-y-1 hover:shadow-lg transition-all duration-300 cursor-pointer">
-              <div className="absolute top-0 right-0 bg-brand-orange text-white text-xs font-bold px-3 py-1 rounded-bl-lg">URGENT</div>
+            {verifyStatus !== 'Approved' && (
+              <p className="text-sm text-gray-500 mb-4">Your helper verification is {verifyStatus ? verifyStatus.toLowerCase() : 'not started'}. You will receive requests once an admin approves it.</p>
+            )}
+            {verifyStatus === 'Approved' && requests.length === 0 && (
+              <p className="text-sm text-gray-500 mb-4">No new requests right now. New bookings will appear here.</p>
+            )}
+            {requests.map(request => (
+            <Card key={request.booking_id} className="border-l-4 border-l-brand-orange shadow-md relative overflow-hidden mb-4 hover:-translate-y-1 hover:shadow-lg transition-all duration-300 cursor-pointer">
               <div className="flex justify-between items-start mb-4 pt-2">
                 <div>
-                  <h3 className="font-bold text-gray-900 text-lg">Fix Leaking Pipe</h3>
+                  <h3 className="font-bold text-gray-900 text-lg">{request.title || 'New task'}</h3>
                   <p className="text-gray-500 text-sm flex items-center mt-1 mb-1">
-                    <MapPin className="w-4 h-4 me-1" /> DHA Phase 6 (2km away)
+                    <MapPin className="w-4 h-4 me-1" /> {request.location || 'Address shared after accepting'}
                   </p>
                   <div className="flex items-center gap-2">
                     <div className="bg-brand-teal/10 px-2 py-0.5 rounded text-[10px] font-bold text-brand-teal flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3" /> Verified User
                     </div>
+                    <span className="text-[10px] text-gray-500 font-medium">{request.counterpart_name}</span>
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="font-bold text-brand-teal text-xl">Rs. 800</p>
-                  <p className="text-xs text-gray-500">Est. 1 hr</p>
+                  <p className="font-bold text-brand-teal text-xl">{formatPrice(request.price)}</p>
+                  <p className="text-xs text-gray-500">{categoryName(request.category)}</p>
                 </div>
               </div>
               
               <div className="flex gap-2">
-                <Button variant="outline" className="flex-1 h-10">Decline</Button>
-                <Button className="flex-1 h-10 bg-brand-orange hover:bg-orange-500 focus:ring-brand-orange text-white" onClick={() => navigate('/helper/active-job')}>Accept Job</Button>
+                <Button variant="outline" className="flex-1 h-10" disabled={busyId === request.booking_id} onClick={() => respond(request, false)}>Decline</Button>
+                <Button className="flex-1 h-10 bg-brand-orange hover:bg-orange-500 focus:ring-brand-orange text-white" isLoading={busyId === request.booking_id} disabled={busyId === request.booking_id} onClick={() => respond(request, true)}>Accept Job</Button>
               </div>
             </Card>
+            ))}
           </>
         )}
 
@@ -167,6 +231,90 @@ export function ActiveJobScreen() {
   const [feedback, setFeedback] = useState("");
   const [showSOS, setShowSOS] = useState(false);
   const [sosSent, setSosSent] = useState(false);
+  const addToast = useAppStore(state => state.addToast);
+  const bookingId = localStorage.getItem(CURRENT_BOOKING_KEY);
+  const [booking, setBooking] = useState<MyBooking | null>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [workStartedAt, setWorkStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
+
+  // Load the booking; starting the job moves an accepted booking to On-the-way
+  useEffect(() => {
+    if (!bookingId) {
+      navigate('/helper', { replace: true });
+      return;
+    }
+    (async () => {
+      try {
+        let current = await getMyBooking(bookingId);
+        if (!current || current.my_role !== 'helper') {
+          addToast('Job not found.', 'error');
+          navigate('/helper', { replace: true });
+          return;
+        }
+        if (current.status === 'Accepted') {
+          await updateBookingStatus(bookingId, 'On-the-way');
+          current = { ...current, status: 'On-the-way' };
+        }
+        setBooking(current);
+        if (current.status === 'Arrived' || current.status === 'In-progress') {
+          setStatus('working');
+          setWorkStartedAt(Date.now());
+        } else if (current.status === 'Completed') {
+          setStatus('completed');
+        } else if (current.status === 'Cancelled' || current.status === 'Rejected') {
+          addToast('This booking is no longer active.', 'info');
+          navigate('/helper', { replace: true });
+        }
+      } catch (err: any) {
+        addToast(err?.message || 'Could not load the job.', 'error');
+      }
+    })();
+  }, [bookingId]);
+
+  // Notice if the customer cancels while the helper is on the way
+  useEffect(() => {
+    if (!bookingId || (status !== 'navigating' && status !== 'working')) return;
+    const timer = setInterval(async () => {
+      try {
+        const latest = await getMyBooking(bookingId);
+        if (latest?.status === 'Cancelled') {
+          addToast('The customer cancelled this booking.', 'info');
+          localStorage.removeItem(CURRENT_BOOKING_KEY);
+          navigate('/helper', { replace: true });
+        }
+      } catch (err) {
+        console.warn('Job refresh failed:', err);
+      }
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [bookingId, status]);
+
+  useEffect(() => {
+    if (status !== 'working') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [status]);
+
+  const elapsed = workStartedAt ? Math.max(0, Math.floor((now - workStartedAt) / 1000)) : 0;
+  const pad = (v: number) => String(v).padStart(2, '0');
+
+  const advance = async (steps: ('Arrived' | 'In-progress' | 'Completed')[], nextView: 'working' | 'rating') => {
+    if (!bookingId) return;
+    setIsUpdating(true);
+    try {
+      for (const step of steps) {
+        await updateBookingStatus(bookingId, step);
+      }
+      setBooking(current => (current ? { ...current, status: steps[steps.length - 1] } : current));
+      if (nextView === 'working') setWorkStartedAt(Date.now());
+      setStatus(nextView);
+    } catch (err: any) {
+      addToast(err?.message || 'Could not update the job.', 'error');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   return (
     <div className="flex-1 bg-gray-50 flex flex-col h-full relative overflow-hidden">
@@ -249,17 +397,8 @@ export function ActiveJobScreen() {
                   ? "Job in Progress"
                   : "Job Completed"}
             </h2>
-            <p className="text-sm text-gray-500 font-medium flex items-center gap-2">Ahmed Khan <CheckCircle2 className="w-3.5 h-3.5 text-brand-teal" /> • Fix Leaking Pipe</p>
+            <p className="text-sm text-gray-500 font-medium flex items-center gap-2">{booking?.counterpart_name || 'Customer'} <CheckCircle2 className="w-3.5 h-3.5 text-brand-teal" /> • {booking?.title || 'Task'}</p>
           </div>
-          {status === "navigating" && (
-            <div className="w-14 h-14 rounded-full border-[3px] border-brand-teal/20 flex flex-col items-center justify-center relative">
-               <svg className="w-full h-full absolute -rotate-90" viewBox="0 0 36 36">
-                  <path className="text-brand-teal" strokeDasharray="80, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" fill="none" stroke="currentColor" strokeWidth="3" />
-               </svg>
-               <span className="font-bold text-brand-teal text-[11px] leading-tight mt-1">5</span>
-               <span className="text-[7px] text-brand-teal font-medium uppercase">min</span>
-            </div>
-          )}
         </div>
 
         {status === "navigating" && (
@@ -271,7 +410,7 @@ export function ActiveJobScreen() {
                  </div>
                  <div>
                    <p className="text-xs font-bold text-gray-900 mb-0.5">Destination</p>
-                   <p className="text-[10px] text-gray-600">House 42, Street 1, DHA Phase 6</p>
+                   <p className="text-[10px] text-gray-600">{booking?.location || 'Address not provided'}</p>
                  </div>
                </div>
                <button className="w-10 h-10 bg-white border border-gray-100 shadow-sm rounded-full flex items-center justify-center text-brand-teal hover:bg-gray-50">
@@ -285,7 +424,9 @@ export function ActiveJobScreen() {
               </Button>
               <Button
                 className="flex-1 h-12 bg-brand-orange hover:bg-brand-orange-hover shadow-md shadow-brand-orange/20 text-sm"
-                onClick={() => setStatus("working")}
+                onClick={() => advance(['Arrived', 'In-progress'], 'working')}
+                isLoading={isUpdating}
+                disabled={isUpdating || !booking}
               >
                 I have arrived
               </Button>
@@ -302,7 +443,7 @@ export function ActiveJobScreen() {
                   <Clock className="w-8 h-8 text-brand-orange" />
                 </div>
                 <span className="font-bold text-gray-900 text-3xl tracking-tight block mb-1">
-                  00:45<span className="text-xl text-gray-400 font-medium">:12</span>
+                  {pad(Math.floor(elapsed / 3600))}:{pad(Math.floor(elapsed / 60) % 60)}<span className="text-xl text-gray-400 font-medium">:{pad(elapsed % 60)}</span>
                 </span>
                 <p className="text-xs text-gray-500 font-medium uppercase tracking-widest">Elapsed time</p>
               </div>
@@ -312,7 +453,9 @@ export function ActiveJobScreen() {
               <Button variant="outline" className="flex-1 h-12 border-gray-200 text-gray-600 hover:bg-gray-50">Need Help?</Button>
               <Button
                 className="flex-[2] h-12 bg-brand-orange hover:bg-brand-orange-hover shadow-md shadow-brand-orange/20"
-                onClick={() => setStatus("rating")}
+                onClick={() => advance(['Completed'], 'rating')}
+                isLoading={isUpdating}
+                disabled={isUpdating || !booking}
               >
                 Complete Job
               </Button>

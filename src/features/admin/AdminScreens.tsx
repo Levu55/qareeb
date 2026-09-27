@@ -169,6 +169,7 @@ interface CnicSubmission {
   role: string;
   submittedAt: string | null;
   previouslyRejected: boolean;
+  reviewedAt?: string | null;
   isSelf: boolean;
   documents: { front: string | null; back: string | null; selfie: string | null };
 }
@@ -221,6 +222,8 @@ export function AdminCNICQueue() {
   const [isReviewing, setIsReviewing] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  const [approved, setApproved] = useState<CnicSubmission[]>([]);
+  const [revoking, setRevoking] = useState(false);
 
   const loadQueue = async () => {
     setIsLoading(true);
@@ -228,8 +231,14 @@ export function AdminCNICQueue() {
     try {
       const data = await callReviewCnic({ action: 'list' });
       const list: CnicSubmission[] = data?.submissions ?? [];
+      const approvedList: CnicSubmission[] = data?.approved ?? [];
       setSubmissions(list);
-      setSelectedId(current => (current && list.some(s => s.userId === current) ? current : list[0]?.userId ?? null));
+      setApproved(approvedList);
+      setSelectedId(current =>
+        current && (list.some(s => s.userId === current) || approvedList.some(s => s.userId === current))
+          ? current
+          : list[0]?.userId ?? null
+      );
     } catch (err: any) {
       setLoadError(err?.message || 'Could not load the review queue.');
     } finally {
@@ -241,12 +250,30 @@ export function AdminCNICQueue() {
     loadQueue();
   }, []);
 
-  const selected = submissions.find(s => s.userId === selectedId) || null;
+  const selectedApproved = approved.find(s => s.userId === selectedId) || null;
+  const selected = submissions.find(s => s.userId === selectedId) || selectedApproved;
 
   const selectSubmission = (userId: string) => {
     setSelectedId(userId);
     setRejecting(false);
+    setRevoking(false);
     setRejectReason('');
+  };
+
+  const handleRevoke = async () => {
+    if (!selectedApproved || !rejectReason.trim()) return;
+    setIsReviewing(true);
+    try {
+      await callReviewCnic({ action: 'revoke', userId: selectedApproved.userId, note: rejectReason.trim() });
+      addToast(`Approval revoked for ${selectedApproved.name || 'applicant'}. It is back in the review queue.`, 'info');
+      setRevoking(false);
+      setRejectReason('');
+      await loadQueue();
+    } catch (err: any) {
+      addToast(err?.message || 'Revoke failed.', 'error');
+    } finally {
+      setIsReviewing(false);
+    }
   };
 
   const handleReview = async (decision: 'approved' | 'rejected') => {
@@ -306,6 +333,22 @@ export function AdminCNICQueue() {
                  </p>
                </div>
              ))}
+             {approved.length > 0 && (
+               <div className="p-4 border-b border-gray-100 bg-gray-50 font-semibold text-gray-700 text-sm">Approved ({approved.length})</div>
+             )}
+             {approved.map((item) => (
+               <div
+                 key={item.userId}
+                 onClick={() => selectSubmission(item.userId)}
+                 className={cn(
+                   "p-4 border-b border-gray-100 cursor-pointer transition-colors",
+                   selectedId === item.userId ? "bg-brand-orange-light border-l-4 border-brand-orange border-l-brand-orange" : "hover:bg-gray-50"
+                 )}
+               >
+                 <p className="font-semibold text-gray-900">{item.name || 'Unnamed applicant'}{item.isSelf ? ' (you)' : ''}</p>
+                 <p className="text-sm text-gray-500 mt-1">{roleLabel(item.role)} • Approved</p>
+               </div>
+             ))}
           </div>
         </Card>
 
@@ -320,7 +363,7 @@ export function AdminCNICQueue() {
                 </p>
               </div>
               <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-semibold">
-                {selected.previouslyRejected ? 'Resubmitted' : 'Pending Review'}
+                {selectedApproved ? 'Approved' : selected.previouslyRejected ? 'Resubmitted' : 'Pending Review'}
               </span>
             </div>
 
@@ -358,7 +401,48 @@ export function AdminCNICQueue() {
               <p className="mb-4 p-3 bg-yellow-50 text-yellow-800 text-sm rounded-xl">This is your own submission, so Approve and Reject are disabled. Another admin must review it.</p>
             )}
 
-            {rejecting ? (
+            {selectedApproved ? (
+              revoking ? (
+                <div className="mt-auto border-t border-gray-100 pt-6">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Reason for revoking this approval</label>
+                  <textarea
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    maxLength={500}
+                    rows={3}
+                    autoFocus
+                    placeholder="e.g. Approved by mistake, document needs re-checking"
+                    className="w-full rounded-2xl border border-gray-300 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+                  />
+                  <p className="text-xs text-gray-500 mt-2">The submission returns to the pending queue, where it can be approved or rejected again.</p>
+                  <div className="flex justify-end space-x-4 mt-4">
+                    <Button variant="outline" className="w-32" disabled={isReviewing} onClick={() => { setRevoking(false); setRejectReason(''); }}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="danger"
+                      className="w-48 bg-red-600 text-white hover:bg-red-700"
+                      disabled={isReviewing || !rejectReason.trim()}
+                      isLoading={isReviewing}
+                      onClick={handleRevoke}
+                    >
+                      Confirm Revoke
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-auto flex justify-end space-x-4 border-t border-gray-100 pt-6">
+                  <Button
+                    variant="danger"
+                    className="w-48 bg-white text-red-600 border-2 border-red-200 hover:bg-red-50"
+                    disabled={isReviewing || selected.isSelf}
+                    onClick={() => setRevoking(true)}
+                  >
+                    Revoke Approval
+                  </Button>
+                </div>
+              )
+            ) : rejecting ? (
               <div className="mt-auto border-t border-gray-100 pt-6">
                 <label className="block text-sm font-semibold text-gray-700 mb-2">Reason for rejection</label>
                 <textarea

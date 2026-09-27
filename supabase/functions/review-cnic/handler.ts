@@ -1,4 +1,4 @@
-// Admin CNIC review: list pending submissions and approve/reject them.
+// Admin CNIC review: list pending submissions, approve/reject them, and revoke approvals.
 // Approval is written to auth app_metadata (not user-editable) and, for helpers,
 // to Helpers."Verify-status". Only admins/superadmins may call this, and never
 // for their own submission.
@@ -35,7 +35,7 @@ export interface ReviewRepo {
   getUser(userId: string): Promise<AuthUserLike | null>;
   setAppMetadata(userId: string, appMetadata: Record<string, unknown>): Promise<void>;
   getProfiles(userIds: string[]): Promise<ProfileLike[]>;
-  setHelperVerifyStatus(userId: string, status: 'Approved' | 'Rejected'): Promise<boolean>;
+  setHelperVerifyStatus(userId: string, status: 'Approved' | 'Rejected' | 'Pending'): Promise<boolean>;
   listDocuments(userId: string): Promise<StoredFile[]>;
   signedUrls(paths: string[], expiresInSeconds: number): Promise<(string | null)[]>;
 }
@@ -83,16 +83,16 @@ export function latestDocuments(files: StoredFile[]): Partial<Record<(typeof DOC
   return result;
 }
 
-async function listPending(repo: ReviewRepo, callerId: string): Promise<Response> {
-  const pending = (await repo.listUsers())
-    .filter(isPendingReview)
-    .sort((a, b) => time(a.user_metadata?.cnic_submitted_at) - time(b.user_metadata?.cnic_submitted_at));
+export function isApproved(user: AuthUserLike): boolean {
+  return user.app_metadata?.cnic_status === 'approved';
+}
 
-  const profiles = pending.length ? await repo.getProfiles(pending.map((u) => u.id)) : [];
+async function describe(repo: ReviewRepo, users: AuthUserLike[], callerId: string) {
+  const profiles = users.length ? await repo.getProfiles(users.map((u) => u.id)) : [];
   const profileById = new Map(profiles.map((p) => [p.ID, p]));
 
   const submissions = [];
-  for (const user of pending) {
+  for (const user of users) {
     const docs = latestDocuments(await repo.listDocuments(user.id));
     const types = DOC_TYPES.filter((t) => docs[t]);
     const urls = types.length
@@ -109,12 +109,64 @@ async function listPending(repo: ReviewRepo, callerId: string): Promise<Response
       role: profile?.Role || 'user',
       submittedAt: user.user_metadata?.cnic_submitted_at ?? null,
       previouslyRejected: user.app_metadata?.cnic_status === 'rejected',
+      reviewedAt: user.app_metadata?.cnic_reviewed_at ?? null,
       isSelf: user.id === callerId,
       documents,
     });
   }
+  return submissions;
+}
 
-  return json(200, { submissions, linkExpiresInSeconds: SIGNED_URL_SECONDS });
+async function listQueue(repo: ReviewRepo, callerId: string): Promise<Response> {
+  const users = await repo.listUsers();
+  const pending = users
+    .filter(isPendingReview)
+    .sort((a, b) => time(a.user_metadata?.cnic_submitted_at) - time(b.user_metadata?.cnic_submitted_at));
+  const approved = users
+    .filter(isApproved)
+    .sort((a, b) => time(b.app_metadata?.cnic_reviewed_at) - time(a.app_metadata?.cnic_reviewed_at));
+
+  return json(200, {
+    submissions: await describe(repo, pending, callerId),
+    approved: await describe(repo, approved, callerId),
+    linkExpiresInSeconds: SIGNED_URL_SECONDS,
+  });
+}
+
+/** Withdraws an approval and returns the submission to the review queue. */
+async function revoke(repo: ReviewRepo, callerId: string, body: Record<string, unknown>): Promise<Response> {
+  const userId = body.userId;
+  const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
+
+  if (typeof userId !== 'string' || !UUID_RE.test(userId)) {
+    return json(400, { error: 'A valid userId is required.' });
+  }
+  if (!note) {
+    return json(400, { error: 'A reason is required when revoking an approval.' });
+  }
+  if (userId === callerId) {
+    return json(403, { error: 'You cannot revoke your own approval.' });
+  }
+
+  const target = await repo.getUser(userId);
+  if (!target) {
+    return json(404, { error: 'User not found.' });
+  }
+  if (!isApproved(target)) {
+    return json(409, { error: 'This user is not currently approved.' });
+  }
+
+  await repo.setAppMetadata(userId, {
+    ...(target.app_metadata ?? {}),
+    cnic_status: null,
+    cnic_revoked_at: new Date().toISOString(),
+    cnic_revoked_by: callerId,
+    cnic_review_note: note,
+  });
+
+  const helperUpdated = await repo.setHelperVerifyStatus(userId, 'Pending');
+
+  return json(200, { ok: true, userId, decision: 'revoked', helperUpdated });
 }
 
 async function review(repo: ReviewRepo, callerId: string, body: Record<string, unknown>): Promise<Response> {
@@ -181,9 +233,10 @@ export async function handleReviewCnic(req: Request, repo: ReviewRepo): Promise<
   }
 
   try {
-    if (body.action === 'list') return await listPending(repo, callerId);
+    if (body.action === 'list') return await listQueue(repo, callerId);
     if (body.action === 'review') return await review(repo, callerId, body);
-    return json(400, { error: 'action must be "list" or "review".' });
+    if (body.action === 'revoke') return await revoke(repo, callerId, body);
+    return json(400, { error: 'action must be "list", "review" or "revoke".' });
   } catch (err) {
     console.error('[review-cnic] failed:', err instanceof Error ? err.message : err);
     return json(500, { error: 'Review service error. Please try again.' });
