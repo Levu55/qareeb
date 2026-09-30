@@ -127,12 +127,111 @@ export function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [name, setName] = useState('');
   
-  const [authStep, setAuthStep] = useState<'credentials' | 'otp' | 'referral'>('credentials');
+  const [authStep, setAuthStep] = useState<'credentials' | 'otp' | 'referral' | 'reset-request' | 'reset-verify'>('credentials');
   const [otp, setOtp] = useState('');
   const [referral, setReferral] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  // Set once the reset code is verified, so a failed password save can be retried without a new code
+  const [resetVerified, setResetVerified] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
-  const [errors, setErrors] = useState<{ phone?: string; password?: string; name?: string; otp?: string; referral?: string; form?: string }>({});
+  const [errors, setErrors] = useState<{ phone?: string; password?: string; confirm?: string; name?: string; otp?: string; referral?: string; form?: string }>({});
+
+  const isValidPhone = (raw: string) => {
+    const candidate = normalizePhoneNumber(raw);
+    return raw.replace(/\D/g, '').length >= 10
+      && /^\+[1-9]\d{7,14}$/.test(candidate)
+      && (!candidate.startsWith('+92') || /^\+923\d{9}$/.test(candidate));
+  };
+
+  /** Loads the signed-in user's role and opens the matching home screen. */
+  const enterApp = async (user: any, session: any, normalizedPhone: string) => {
+    const { data: profile } = await supabase
+      .from('Profiles')
+      .select('ID, Phone, Role')
+      .eq('ID', user.id)
+      .maybeSingle();
+    const userRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
+    login(userRole, user.user_metadata?.full_name || '', normalizedPhone, user, session);
+    setCnicStatus(getCnicStatus(user));
+    if (userRole === 'helper') navigate('/helper');
+    else if (userRole === 'admin' || userRole === 'superadmin') navigate('/admin');
+    else navigate('/user');
+  };
+
+  // Forgot password, step 1: send a one-time code to the account's phone (existing accounts only)
+  const handleResetRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrors({});
+    if (!isValidPhone(phone)) {
+      setErrors({ phone: 'Please enter a valid mobile number (e.g., 03001234567)' });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        phone: normalizePhoneNumber(phone),
+        options: { shouldCreateUser: false },
+      });
+      const msg = (error?.message || '').toLowerCase();
+      // Unknown numbers continue like known ones, so the form does not reveal which numbers have accounts
+      if (error && !msg.includes('signups not allowed') && !msg.includes('user not found')) {
+        setErrors({ form: getFriendlyAuthErrorMessage(error) });
+        return;
+      }
+      setOtp('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setResetVerified(false);
+      setAuthStep('reset-verify');
+    } catch (err: any) {
+      setErrors({ form: getFriendlyAuthErrorMessage(err) });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Forgot password, step 2: verify the code (this signs the user in), then save the new password
+  const handleResetVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrors({});
+    const nextErrors: typeof errors = {};
+    if (!resetVerified && otp.trim().length < 6) nextErrors.otp = 'Please enter the 6-digit verification code.';
+    if (newPassword.length < 6) nextErrors.password = 'Password must be at least 6 characters';
+    if (confirmPassword !== newPassword) nextErrors.confirm = 'Passwords do not match';
+    if (Object.keys(nextErrors).length > 0) {
+      setErrors(nextErrors);
+      return;
+    }
+
+    setIsLoading(true);
+    const normalizedPhone = normalizePhoneNumber(phone);
+    try {
+      if (!resetVerified) {
+        const { error } = await supabase.auth.verifyOtp({ phone: normalizedPhone, token: otp.trim(), type: 'sms' });
+        if (error) {
+          setErrors({ otp: getFriendlyAuthErrorMessage(error) });
+          return;
+        }
+        setResetVerified(true);
+      }
+
+      const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error || !data?.user) {
+        setErrors({ form: getFriendlyAuthErrorMessage(error) || 'Could not save the new password. Please try again.' });
+        return;
+      }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      useAppStore.getState().addToast('Your password has been changed.', 'success');
+      await enterApp(data.user, session, normalizedPhone);
+    } catch (err: any) {
+      setErrors({ form: getFriendlyAuthErrorMessage(err) });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -294,6 +393,8 @@ export function LoginScreen() {
 
           if (userRole === 'helper') {
             navigate('/helper');
+          } else if (userRole === 'admin' || userRole === 'superadmin') {
+            navigate('/admin');
           } else {
             navigate('/user');
           }
@@ -417,7 +518,7 @@ export function LoginScreen() {
 
             {!isSignup && (
               <div className="flex justify-end">
-                <button type="button" className="text-sm font-medium text-brand-teal">Forgot Password?</button>
+                <button type="button" onClick={() => { setErrors({}); setAuthStep('reset-request'); }} className="text-sm font-medium text-brand-teal">Forgot Password?</button>
               </div>
             )}
 
@@ -474,6 +575,91 @@ export function LoginScreen() {
             <button type="button" onClick={() => setAuthStep('credentials')} className="text-sm font-medium text-gray-500 hover:text-gray-900 pt-4">
               ← Back
             </button>
+          </form>
+        </div>
+      )}
+
+      {(authStep === 'reset-request' || authStep === 'reset-verify') && errors.form && (
+        <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <p className="text-sm text-red-700 leading-relaxed">{errors.form}</p>
+        </div>
+      )}
+
+      {authStep === 'reset-request' && (
+        <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">Reset Password</h1>
+            <p className="text-gray-500 text-sm">Enter your account's mobile number and we'll send you a verification code.</p>
+          </div>
+          <form onSubmit={handleResetRequest} className="flex flex-col space-y-6">
+            <Input
+              placeholder="Mobile Number (e.g. 03001234567)"
+              icon={<Phone className="w-5 h-5 text-gray-400" />}
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              error={errors.phone}
+            />
+            <Button type="submit" className="w-full" isLoading={isLoading} disabled={isLoading}>
+              Send Code
+            </Button>
+            <button type="button" onClick={() => { setErrors({}); setAuthStep('credentials'); }} className="text-sm font-medium text-gray-500 hover:text-gray-900 pt-4">
+              ← Back to Login
+            </button>
+          </form>
+        </div>
+      )}
+
+      {authStep === 'reset-verify' && (
+        <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">Choose a New Password</h1>
+            <p className="text-gray-500 text-sm">If an account exists for <span className="font-semibold text-gray-900">{phone}</span>, we've sent it a 6-digit code.</p>
+          </div>
+          <form onSubmit={handleResetVerify} className="flex flex-col space-y-5">
+            {!resetVerified && (
+              <Input
+                placeholder="Enter 6-digit OTP"
+                value={otp}
+                onChange={(e) => setOtp(e.target.value)}
+                error={errors.otp}
+                maxLength={6}
+              />
+            )}
+            <div className="relative">
+              <Input
+                type={showPassword ? 'text' : 'password'}
+                placeholder="New Password"
+                icon={<Lock className="w-5 h-5 text-gray-400" />}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                error={errors.password}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 focus:outline-none"
+                style={{ marginTop: errors.password ? '-12px' : '0' }}
+              >
+                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
+            </div>
+            <Input
+              type={showPassword ? 'text' : 'password'}
+              placeholder="Confirm New Password"
+              icon={<Lock className="w-5 h-5 text-gray-400" />}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              error={errors.confirm}
+            />
+            <Button type="submit" className="w-full" isLoading={isLoading} disabled={isLoading}>
+              Save New Password
+            </Button>
+            {!resetVerified && (
+              <button type="button" onClick={() => { setErrors({}); setAuthStep('reset-request'); }} className="text-sm font-medium text-gray-500 hover:text-gray-900 pt-2">
+                ← Didn't get a code? Send again
+              </button>
+            )}
           </form>
         </div>
       )}

@@ -10,7 +10,7 @@ import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore } from '../../store/useAppStore';
 import { Wrench, Calendar, Camera, Box, Lock, Zap, Droplets, Paintbrush, Truck, MapPin, Search, Star, Clock, ArrowRight, ShieldCheck, Phone, CheckCircle2, Menu, Bell, Home, PlayCircle, ClipboardList, CheckCircle, FileText, User, ShoppingBag, Heart, Tent, Scissors, Plus, ChevronRight, BookOpen, MonitorSmartphone, UserRoundCheck, Edit2, Tag } from 'lucide-react';
 import { SERVICE_CATEGORIES, DIGITAL_PAYMENT_THRESHOLD } from '../../config/businessLogic';
-import { createTask, findHelpers, createBooking, getTask, getMyBooking, updateBookingStatus, submitReview, geocodeAddress, getBrowserPosition, osmEmbedUrl, formatDistance, formatEta, categoryName, avatarUrl, formatPrice, CURRENT_TASK_KEY, CURRENT_BOOKING_KEY, type Coordinates, type HelperListing, type MyBooking, type TaskRecord } from '../../lib/marketplace';
+import { createTask, findHelpers, createBooking, getTask, getMyBooking, updateBookingStatus, submitReview, cancelTask, onBookingsChange, getNotifications, markNotificationsRead, onNotificationsChange, timeAgo, type NotificationRecord, getPaymentForBooking, choosePaymentMethod, getDigitalPaymentThreshold, type PaymentRecord, geocodeAddress, getBrowserPosition, osmEmbedUrl, formatDistance, formatEta, categoryName, avatarUrl, formatPrice, CURRENT_TASK_KEY, CURRENT_BOOKING_KEY, type Coordinates, type HelperListing, type MyBooking, type TaskRecord } from '../../lib/marketplace';
 import { supabase } from '../../lib/supabaseClient';
 import { getCnicStatus } from '../../lib/authHelpers';
 
@@ -35,8 +35,37 @@ export function UserHome() {
   const navigate = useNavigate();
 
   const userName = useAppStore(state => state.userName);
-  const tasks = useAppStore(state => state.tasks);
+  const userId: string | undefined = useAppStore(state => state.user?.id);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const unreadCount = notifications.filter(n => !n['Read-at']).length;
+
+  // Notifications are created by the database (booking updates, payments, messages)
+  useEffect(() => {
+    if (!userId) return;
+    const load = () => getNotifications().then(setNotifications).catch(err => console.warn('Notifications load failed:', err));
+    load();
+    return onNotificationsChange(userId, load);
+  }, [userId]);
+
+  const openNotification = (n: NotificationRecord) => {
+    setShowNotifications(false);
+    if (!n['Read-at']) markNotificationsRead([n.ID]).catch(err => console.warn('Mark read failed:', err));
+    setNotifications(list => list.map(x => (x.ID === n.ID ? { ...x, 'Read-at': new Date().toISOString() } : x)));
+    if (n.Type === 'message') navigate('/user/messages');
+    else if (n.Type === 'booking_completed' && n['Booking-id']) { localStorage.setItem(CURRENT_BOOKING_KEY, n['Booking-id']); navigate('/user/payment'); }
+    else navigate('/user/bookings');
+  };
+
+  const markAllRead = async () => {
+    try {
+      await markNotificationsRead();
+      setNotifications(list => list.map(x => ({ ...x, 'Read-at': x['Read-at'] || new Date().toISOString() })));
+    } catch (err) {
+      console.warn('Mark all read failed:', err);
+    }
+    setShowNotifications(false);
+  };
 
   return (
     <div className="pb-24 bg-white min-h-screen font-sans overflow-x-hidden">
@@ -51,12 +80,11 @@ export function UserHome() {
                  </button>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                 {[
-                   { title: 'Booking Confirmed', desc: 'Your plumber is confirmed for tomorrow at 10 AM.', time: '2m ago', unread: true },
-                   { title: 'Payment Successful', desc: 'Easypaisa payment of Rs. 1,500 was successful.', time: '1h ago', unread: true },
-                   { title: 'Welcome to Qareeb!', desc: 'Start finding trusted help around your neighborhood.', time: '1d ago', unread: false }
-                 ].map((notif, i) => (
-                   <div key={i} onClick={() => { setShowNotifications(false); navigate('/user/bookings'); }} className={`p-4 rounded-2xl border cursor-pointer hover:shadow-md transition-all ${notif.unread ? 'bg-orange-50/50 border-brand-orange/20' : 'bg-white border-gray-100'}`}>
+                 {notifications.length === 0 && (
+                   <p className="text-sm text-gray-500 text-center py-8">No notifications yet. Updates about your bookings will appear here.</p>
+                 )}
+                 {notifications.map((n) => ({ key: n.ID, title: n.Title, desc: n.Body || '', time: timeAgo(n['Created-at']), unread: !n['Read-at'], source: n })).map((notif) => (
+                   <div key={notif.key} onClick={() => openNotification(notif.source)} className={`p-4 rounded-2xl border cursor-pointer hover:shadow-md transition-all ${notif.unread ? 'bg-orange-50/50 border-brand-orange/20' : 'bg-white border-gray-100'}`}>
                      <div className="flex justify-between items-start mb-1">
                         <h4 className={`font-bold ${notif.unread ? 'text-gray-900' : 'text-gray-700'}`}>{notif.title}</h4>
                         {notif.unread && <span className="w-2 h-2 rounded-full bg-brand-orange mt-1.5 shrink-0"></span>}
@@ -67,7 +95,7 @@ export function UserHome() {
                  ))}
               </div>
               <div className="p-4 border-t border-gray-100 bg-white">
-                 <Button variant="outline" className="w-full text-brand-orange border-brand-orange/20 hover:bg-brand-orange/5" onClick={() => setShowNotifications(false)}>Mark all as read</Button>
+                 <Button variant="outline" className="w-full text-brand-orange border-brand-orange/20 hover:bg-brand-orange/5" onClick={markAllRead} disabled={unreadCount === 0}>Mark all as read</Button>
               </div>
            </div>
         </div>
@@ -82,12 +110,12 @@ export function UserHome() {
              </div>
              <div>
                <p className="text-gray-500 text-sm font-medium">Welcome back,</p>
-               <h1 className="text-xl md:text-2xl font-bold">{userName || 'Demo User'}</h1>
+               <h1 className="text-xl md:text-2xl font-bold">{userName || 'there'}</h1>
              </div>
            </div>
            <button onClick={() => setShowNotifications(true)} className="p-3 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors relative text-gray-700">
              <Bell className="w-6 h-6" />
-             <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-brand-orange rounded-full border-2 border-white"></span>
+             {unreadCount > 0 && <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-brand-orange rounded-full border-2 border-white"></span>}
            </button>
         </div>
 
@@ -554,9 +582,9 @@ function toHelperCard(h: HelperListing) {
     reviews: Number(h.review_count) || 0,
     completedTasks: Number(h.completed_jobs) || 0,
     experience: null as string | null,
-    // Approximate: straight-line distance from the task address to the helper's last known position
-    eta: formatEta(h.distance_km),
-    distance: formatDistance(h.distance_km),
+    // Approximate: the database rounds listing distances up to whole kilometres for helper privacy
+    eta: formatEta(h.distance_km) && `~${formatEta(h.distance_km)}`,
+    distance: h.distance_km != null ? `~${Number(h.distance_km)} km` : null,
     skills: services.join(' • '),
     bio: services.length ? `Verified Qareeb helper offering ${services.join(', ')}.` : 'Verified Qareeb helper.',
   };
@@ -574,7 +602,24 @@ export function SelectHelperScreen() {
   const [helpers, setHelpers] = useState<any[]>([]);
   const [isLoadingHelpers, setIsLoadingHelpers] = useState(true);
   const [isBooking, setIsBooking] = useState(false);
+  const [isCancellingTask, setIsCancellingTask] = useState(false);
   const taskId = localStorage.getItem(CURRENT_TASK_KEY);
+
+  // Without this the unmatched task would stay Open with no way to close it
+  const handleCancelTask = async () => {
+    if (!taskId) return;
+    setIsCancellingTask(true);
+    try {
+      await cancelTask(taskId);
+      localStorage.removeItem(CURRENT_TASK_KEY);
+      addToast('Request cancelled.', 'info');
+      navigate('/user', { replace: true });
+    } catch (err: any) {
+      addToast(err?.message || 'Could not cancel the request.', 'error');
+    } finally {
+      setIsCancellingTask(false);
+    }
+  };
 
   useEffect(() => {
     if (!taskId) {
@@ -799,7 +844,10 @@ export function SelectHelperScreen() {
               </div>
               <h3 className="text-lg font-bold text-gray-900 mb-2">No helpers available</h3>
               <p className="text-sm text-gray-500 font-medium mb-6">We couldn't find any helpers for this specific service right now.</p>
-              <Button variant="outline" onClick={() => navigate(-1)}>Go Back</Button>
+              <div className="flex gap-3 justify-center">
+                <Button variant="outline" onClick={() => navigate(-1)}>Go Back</Button>
+                <Button variant="outline" className="border-red-200 text-red-500 hover:bg-red-50" isLoading={isCancellingTask} disabled={isCancellingTask} onClick={handleCancelTask}>Cancel Request</Button>
+              </div>
             </div>
           )}
           {helpers.map(helper => (
@@ -870,7 +918,7 @@ export function TrackingScreen() {
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
 
-  // Poll the booking so the customer sees the helper's updates
+  // Realtime pushes the helper's status updates; polling is a fallback and refreshes distance/ETA
   useEffect(() => {
     if (!bookingId) {
       navigate('/user', { replace: true });
@@ -892,8 +940,9 @@ export function TrackingScreen() {
       }
     };
     load();
-    const timer = setInterval(load, 5000);
-    return () => { active = false; clearInterval(timer); };
+    const unsubscribe = onBookingsChange(`ID=eq.${bookingId}`, load);
+    const timer = setInterval(load, 15000);
+    return () => { active = false; clearInterval(timer); unsubscribe(); };
   }, [bookingId]);
 
   const dbStatus = booking?.status;
@@ -930,6 +979,8 @@ export function TrackingScreen() {
     try {
       await updateBookingStatus(booking.booking_id, 'Cancelled');
       setBooking({ ...booking, status: 'Cancelled' });
+      // "Cancel Request" closes the whole request, so the task does not stay open
+      await cancelTask(booking.task_id).catch(err => console.warn('Task cancel failed:', err));
       addToast('Booking cancelled.', 'info');
     } catch (err: any) {
       addToast(err?.message || 'Could not cancel the booking.', 'error');
@@ -1033,7 +1084,6 @@ export function TrackingScreen() {
         {canCancel && !confirmCancel && (
           <div className="mt-8 flex gap-4">
             <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" onClick={() => setConfirmCancel(true)}>Cancel Request</Button>
-            <Button variant="outline" className="flex-1">Edit Request</Button>
           </div>
         )}
 
@@ -1052,7 +1102,23 @@ export function TrackingScreen() {
             {dbStatus === 'Rejected' && (
               <Button className="flex-1" onClick={() => { localStorage.removeItem(CURRENT_BOOKING_KEY); navigate('/user/select-helper'); }}>Choose Another Helper</Button>
             )}
-            <Button variant="outline" className="flex-1" onClick={() => { localStorage.removeItem(CURRENT_BOOKING_KEY); navigate('/user'); }}>Back to Home</Button>
+            {dbStatus === 'Rejected' ? (
+              <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" isLoading={isCancelling} disabled={isCancelling} onClick={async () => {
+                if (!booking) return;
+                setIsCancelling(true);
+                try {
+                  await cancelTask(booking.task_id);
+                  localStorage.removeItem(CURRENT_BOOKING_KEY);
+                  navigate('/user');
+                } catch (err: any) {
+                  addToast(err?.message || 'Could not cancel the request.', 'error');
+                } finally {
+                  setIsCancelling(false);
+                }
+              }}>Cancel Request</Button>
+            ) : (
+              <Button variant="outline" className="flex-1" onClick={() => { localStorage.removeItem(CURRENT_BOOKING_KEY); navigate('/user'); }}>Back to Home</Button>
+            )}
           </div>
         )}
       </div>
@@ -1065,51 +1131,43 @@ export function TrackingScreen() {
 export function PaymentRatingScreen() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
-  // Helper and amount come from the booking that was just completed
+  // Helper, amount and payment come from the booking that was just completed
   const [completedBooking, setCompletedBooking] = useState<MyBooking | null>(null);
+  const [payment, setPayment] = useState<PaymentRecord | null>(null);
+  const [cashLimit, setCashLimit] = useState(DIGITAL_PAYMENT_THRESHOLD);
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
   useEffect(() => {
     const id = localStorage.getItem(CURRENT_BOOKING_KEY);
-    if (id) getMyBooking(id).then(setCompletedBooking).catch(err => console.warn('Booking load failed:', err));
+    if (!id) return;
+    getMyBooking(id).then(setCompletedBooking).catch(err => console.warn('Booking load failed:', err));
+    getPaymentForBooking(id).then(setPayment).catch(err => console.warn('Payment load failed:', err));
+    getDigitalPaymentThreshold(DIGITAL_PAYMENT_THRESHOLD).then(setCashLimit).catch(err => console.warn('Settings load failed:', err));
   }, []);
   const selectedHelper = {
     name: completedBooking?.counterpart_name || 'Helper',
     photo: avatarUrl(completedBooking?.counterpart_name),
   };
-  const [paymentMethod, setPaymentMethod] = useState('');
-  const [promoCode, setPromoCode] = useState('');
-  const [discount, setDiscount] = useState(0);
-  const [promoApplied, setPromoApplied] = useState(false);
-  const amount = Number(completedBooking?.price) || 0;
-  const isCashDisabled = amount > 1500;
-  
-  // Auto-select easypaisa if cash is disabled and nothing is selected
-  useEffect(() => {
-    if (isCashDisabled && (!paymentMethod || paymentMethod === 'cash')) {
-      setPaymentMethod('easypaisa');
-    }
-  }, [isCashDisabled, paymentMethod]);
+  const amount = Number(payment?.Amount ?? completedBooking?.price) || 0;
+  const cashAllowed = amount <= cashLimit;
+  const isArranged = payment?.Status === 'Awaiting-confirmation' || payment?.Status === 'Paid';
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
-  
 
-  const handleApplyPromo = () => {
-    if (!promoCode) return;
-    if (promoCode.toUpperCase() === 'QAREEB10') {
-      setDiscount(amount * 0.1);
-      setPromoApplied(true);
-    } else {
-      alert('Invalid promo code');
-    }
-  };
-
-  const requiresDigital = amount > DIGITAL_PAYMENT_THRESHOLD;
-
-  const handlePayment = () => {
-    if (!paymentMethod) return;
-    setStep(2);
-    setTimeout(() => {
+  // Online payments are not integrated yet, so cash is the only method that can be recorded
+  const handleCashPayment = async () => {
+    if (!completedBooking) return;
+    setIsSavingPayment(true);
+    setPaymentError(null);
+    try {
+      const status = await choosePaymentMethod(completedBooking.booking_id, 'Cash');
+      setPayment(current => (current ? { ...current, Method: 'Cash', Status: status } : current));
       setStep(3);
-    }, 2000);
+    } catch (err: any) {
+      setPaymentError(err?.message || 'Could not save the payment method.');
+    } finally {
+      setIsSavingPayment(false);
+    }
   };
 
   const [isSavingReview, setIsSavingReview] = useState(false);
@@ -1132,88 +1190,71 @@ export function PaymentRatingScreen() {
     <div className="flex flex-col min-h-screen bg-gray-50 pb-12">
       <div className="bg-white px-4 py-4 flex items-center shadow-sm sticky top-0 z-40 mb-6">
         <h1 className="text-xl font-bold text-gray-900 mx-auto">
-          {step === 1 ? 'Payment' : step === 3 ? 'Rate Helper' : step === 4 ? 'Thank You' : 'Processing'}
+          {step === 1 ? 'Payment' : step === 3 ? 'Rate Helper' : 'Thank You'}
         </h1>
       </div>
 
       <div className="flex-1 px-4 md:px-8 max-w-lg mx-auto w-full flex flex-col justify-center">
         {step === 1 && (
           <div className="animate-in fade-in">
-            <div className="bg-white p-6 rounded-3xl shadow-sm text-center border border-gray-100 mb-6 relative overflow-hidden">
+            <div className="bg-white p-6 rounded-3xl shadow-sm text-center border border-gray-100 mb-6">
               <p className="text-sm text-gray-500 font-medium mb-2">Total Amount</p>
-              <div className="flex items-center justify-center gap-3">
-                {promoApplied && <span className="text-2xl font-bold text-gray-400 line-through">Rs. {amount.toLocaleString()}</span>}
-                <h2 className="text-4xl font-extrabold text-gray-900">Rs. {(amount - discount).toLocaleString()}</h2>
-              </div>
-              
-              <div className="mt-6 flex gap-2">
-                <div className="relative flex-1">
-                  <Tag className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <Input 
-                    placeholder="Promo Code (e.g. QAREEB10)" 
-                    className="pl-10 bg-gray-50 border-gray-200 uppercase"
-                    value={promoCode}
-                    onChange={(e) => setPromoCode(e.target.value)}
-                    disabled={promoApplied}
-                  />
+              <h2 className="text-4xl font-extrabold text-gray-900">Rs. {amount.toLocaleString()}</h2>
+              {payment && (
+                <p className="text-xs text-gray-500 font-medium mt-2">
+                  Payment status: {payment.Status === 'Awaiting-confirmation' ? 'waiting for the helper to confirm' : payment.Status.toLowerCase()}
+                </p>
+              )}
+            </div>
+
+            {isArranged ? (
+              <>
+                <div className="bg-teal-50 border border-brand-teal/20 text-teal-800 p-4 rounded-xl mb-6 text-sm font-medium flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-brand-teal shrink-0 mt-0.5" />
+                  {payment?.Status === 'Paid'
+                    ? `${selectedHelper.name} confirmed receiving your payment.`
+                    : `Please pay Rs. ${amount.toLocaleString()} in cash to ${selectedHelper.name}. They will confirm once they receive it.`}
                 </div>
-                <Button 
-                  variant={promoApplied ? 'secondary' : 'outline'} 
-                  onClick={promoApplied ? () => { setPromoApplied(false); setDiscount(0); setPromoCode(''); } : handleApplyPromo}
-                  className={promoApplied ? 'bg-green-100 text-green-700 border-transparent hover:bg-green-200' : ''}
-                >
-                  {promoApplied ? 'Applied' : 'Apply'}
-                </Button>
-              </div>
-            </div>
+                <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={() => setStep(3)}>Continue to Rating</Button>
+              </>
+            ) : (
+              <>
+                {!cashAllowed && (
+                  <div className="bg-orange-50 border border-brand-orange/20 text-orange-700 p-4 rounded-xl mb-6 text-sm font-medium flex items-start gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-brand-orange shrink-0 mt-0.5" />
+                    Jobs above Rs. {cashLimit.toLocaleString()} must be paid online, which is not available in the app yet. This payment stays due; you can still rate your helper.
+                  </div>
+                )}
 
-            {requiresDigital && (
-              <div className="bg-orange-50 border border-brand-orange/20 text-orange-700 p-4 rounded-xl mb-6 text-sm font-medium flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-brand-orange shrink-0 mt-0.5" />
-                Digital payment is required for bookings above Rs. {DIGITAL_PAYMENT_THRESHOLD}. Cash is unavailable.
-              </div>
+                <h3 className="font-bold text-gray-900 mb-4 px-2">Choose Payment Method</h3>
+
+                <div className="space-y-3">
+                  <div className={`flex items-center p-4 rounded-2xl border-2 ${cashAllowed ? 'border-brand-teal bg-teal-50/50' : 'opacity-50 bg-gray-50 border-gray-100'}`}>
+                    <div className="flex-1 font-bold text-gray-900">Cash</div>
+                    <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">💵</div>
+                  </div>
+                  <div className="flex items-center p-4 rounded-2xl border-2 border-gray-100 bg-gray-50 opacity-60">
+                    <div className="flex-1 font-bold text-gray-900">Easypaisa <span className="ms-2 text-[10px] font-bold bg-gray-200 text-gray-600 px-2 py-0.5 rounded">Coming soon</span></div>
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Easypaisa_Digital_Bank_logo.png/500px-Easypaisa_Digital_Bank_logo.png" alt="Easypaisa" className="h-6 object-contain" />
+                  </div>
+                  <div className="flex items-center p-4 rounded-2xl border-2 border-gray-100 bg-gray-50 opacity-60">
+                    <div className="flex-1 font-bold text-gray-900">JazzCash <span className="ms-2 text-[10px] font-bold bg-gray-200 text-gray-600 px-2 py-0.5 rounded">Coming soon</span></div>
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/JazzCash_logo_%282025%29.png/500px-JazzCash_logo_%282025%29.png" alt="JazzCash" className="h-6 object-contain" />
+                  </div>
+                </div>
+
+                {paymentError && <p className="text-red-500 text-sm mt-4 text-center">{paymentError}</p>}
+                {cashAllowed ? (
+                  <Button className="w-full h-[54px] rounded-2xl text-lg mt-8" onClick={handleCashPayment} isLoading={isSavingPayment} disabled={isSavingPayment || !completedBooking || !payment}>
+                    I'll Pay Rs. {amount.toLocaleString()} in Cash
+                  </Button>
+                ) : (
+                  <Button variant="outline" className="w-full h-[54px] rounded-2xl text-lg mt-8" onClick={() => setStep(3)}>
+                    Continue to Rating
+                  </Button>
+                )}
+              </>
             )}
-
-            <h3 className="font-bold text-gray-900 mb-4 px-2">Choose Payment Method</h3>
-            
-            <div className="space-y-3">
-              <label className={`flex items-center p-4 rounded-2xl border-2 cursor-pointer transition-colors ${paymentMethod === 'easypaisa' ? 'border-brand-teal bg-teal-50/50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
-                <input type="radio" name="payment" className="hidden" checked={paymentMethod === 'easypaisa'} onChange={() => setPaymentMethod('easypaisa')} />
-                <div className="flex-1 font-bold text-gray-900">Easypaisa</div>
-                <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Easypaisa_Digital_Bank_logo.png/500px-Easypaisa_Digital_Bank_logo.png" alt="Easypaisa" className="h-6 object-contain" />
-              </label>
-
-              <label className={`flex items-center p-4 rounded-2xl border-2 cursor-pointer transition-colors ${paymentMethod === 'jazzcash' ? 'border-brand-teal bg-teal-50/50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
-                <input type="radio" name="payment" className="hidden" checked={paymentMethod === 'jazzcash'} onChange={() => setPaymentMethod('jazzcash')} />
-                <div className="flex-1 font-bold text-gray-900">JazzCash</div>
-                <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/JazzCash_logo_%282025%29.png/500px-JazzCash_logo_%282025%29.png" alt="JazzCash" className="h-6 object-contain" />
-              </label>
-
-              <label className={`flex items-center p-4 rounded-2xl border-2 transition-colors ${requiresDigital ? 'opacity-50 cursor-not-allowed bg-gray-50 border-gray-100' : paymentMethod === 'cash' ? 'border-brand-teal bg-teal-50/50 cursor-pointer' : 'border-gray-200 bg-white cursor-pointer hover:border-gray-300'}`}>
-                <input type="radio" name="payment" className="hidden" disabled={requiresDigital} checked={paymentMethod === 'cash'} onChange={() => setPaymentMethod('cash')} />
-                <div className="flex-1 font-bold text-gray-900">Cash</div>
-                <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">💵</div>
-              </label>
-            </div>
-
-            {(paymentMethod === 'easypaisa' || paymentMethod === 'jazzcash') && (
-               <div className="mt-6 p-5 border border-brand-teal/30 bg-teal-50/20 rounded-2xl animate-in slide-in-from-top-2">
-                 <h4 className="font-bold text-gray-900 mb-3 text-sm uppercase tracking-wider">{paymentMethod === 'easypaisa' ? 'Easypaisa' : 'JazzCash'} Wallet Details</h4>
-                 <Input placeholder="Mobile Number (e.g., 03001234567)" className="bg-white" />
-                 <p className="text-xs text-gray-500 mt-2">A prompt will be sent to your mobile wallet app for authorization.</p>
-               </div>
-            )}
-            <Button className="w-full h-[54px] rounded-2xl text-lg mt-8" onClick={handlePayment} disabled={!paymentMethod}>
-              {paymentMethod === 'cash' ? 'Confirm Cash Payment' : 'Pay & Confirm Booking'}
-            </Button>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="text-center animate-in zoom-in duration-300 flex flex-col items-center py-20">
-            <div className="w-16 h-16 border-4 border-gray-200 border-t-brand-teal rounded-full animate-spin mb-6"></div>
-            <h3 className="text-xl font-bold text-gray-900">Processing Payment...</h3>
-            <p className="text-gray-500 mt-2">Please wait securely.</p>
           </div>
         )}
 
@@ -1224,10 +1265,6 @@ export function PaymentRatingScreen() {
                 <img src={selectedHelper.photo} className="w-full h-full object-cover" alt="Helper" />
               </div>
               <h2 className="text-2xl font-bold text-gray-900 mb-1">How was your experience?</h2>
-              <div className="bg-gray-50 inline-flex items-center gap-2 px-3 py-1.5 rounded-full mb-4 mt-2 border border-gray-100">
-                <Clock className="w-4 h-4 text-gray-400" />
-                <span className="text-sm font-bold text-gray-700">Duration: 1h 45m</span>
-              </div>
               <p className="text-gray-500 text-sm mb-6">Rate {selectedHelper.name.split(' ')[0]}'s service quality</p>
               
               <div className="flex justify-center gap-2 mb-8">

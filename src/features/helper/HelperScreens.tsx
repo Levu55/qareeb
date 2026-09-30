@@ -7,9 +7,10 @@ import { MapPin, Navigation as NavIcon, Clock, CheckCircle2, AlertTriangle, Brie
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { CATEGORIES } from '../../data/services';
 import { useAppStore } from '../../store/useAppStore';
-import { getMyBookings, getMyBooking, getMyHelperRecord, setMyAvailability, updateBookingStatus, getMyEarnings, getReviewsAboutMe, submitReview, shareHelperLocation, osmEmbedUrl, formatDistance, categoryName, formatPrice, CURRENT_BOOKING_KEY, type EarningsDay, type MyBooking, type ReviewRecord } from '../../lib/marketplace';
+import { getMyBookings, getMyBooking, getMyHelperRecord, setMyAvailability, updateBookingStatus, getMyEarnings, getReviewsAboutMe, submitReview, shareHelperLocation, onBookingsChange, osmEmbedUrl, categoryName, formatPrice, CURRENT_BOOKING_KEY, type BookingStatus, type EarningsDay, type MyBooking, type ReviewRecord } from '../../lib/marketplace';
 
-
+// Accepted and under way; the database allows a helper only one of these at a time
+const ONGOING_STATUSES: BookingStatus[] = ['Accepted', 'On-the-way', 'Arrived', 'In-progress'];
 
 
 export function HelperHome() {
@@ -18,8 +19,10 @@ export function HelperHome() {
   const [isAvailable, setIsAvailable] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState<string | null>(null);
   const [requests, setRequests] = useState<MyBooking[]>([]);
+  const [activeJob, setActiveJob] = useState<MyBooking | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const { helperServices } = useAppStore();
+  const userId: string | undefined = useAppStore(state => state.user?.id);
   const addToast = useAppStore(state => state.addToast);
 
   const [earnings, setEarnings] = useState<EarningsDay[]>([]);
@@ -60,17 +63,23 @@ export function HelperHome() {
     amount: d.amount,
   }));
 
-  // Pending requests assigned to this helper, refreshed while available
+  // Pending requests and the ongoing job; Realtime pushes new requests, polling is a fallback
   useEffect(() => {
-    if (!isAvailable) return;
     let active = true;
     const load = () => getMyBookings()
-      .then(rows => active && setRequests(rows.filter(r => r.my_role === 'helper' && r.status === 'Pending')))
+      .then(rows => {
+        if (!active) return;
+        const mine = rows.filter(r => r.my_role === 'helper');
+        setRequests(mine.filter(r => r.status === 'Pending'));
+        setActiveJob(mine.find(r => ONGOING_STATUSES.includes(r.status)) || null);
+      })
       .catch(err => console.warn('Request refresh failed:', err));
     load();
-    const timer = setInterval(load, 10000);
-    return () => { active = false; clearInterval(timer); };
-  }, [isAvailable]);
+    if (!isAvailable || !userId) return () => { active = false; };
+    const unsubscribe = onBookingsChange(`Helper-id=eq.${userId}`, load);
+    const timer = setInterval(load, 20000);
+    return () => { active = false; clearInterval(timer); unsubscribe(); };
+  }, [isAvailable, userId]);
 
   const toggleAvailability = async () => {
     const next = !isAvailable;
@@ -148,6 +157,18 @@ export function HelperHome() {
       </div>
 
       <div className="p-6">
+        {activeJob && (
+          <Card className="p-4 mb-6 border-l-4 border-l-brand-teal flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-bold text-brand-teal uppercase tracking-wider mb-1">Active job</p>
+              <h3 className="font-bold text-gray-900">{activeJob.title || 'Task'}</h3>
+              <p className="text-xs text-gray-500">{activeJob.counterpart_name} • {activeJob.status.replace(/-/g, ' ')}</p>
+            </div>
+            <Button className="h-10 px-4 text-sm" onClick={() => { localStorage.setItem(CURRENT_BOOKING_KEY, activeJob.booking_id); navigate('/helper/active-job'); }}>
+              Continue
+            </Button>
+          </Card>
+        )}
         {isAvailable && (
           <>
             <h2 className="text-lg font-bold text-gray-900 mb-4">Incoming Requests</h2>
@@ -164,7 +185,7 @@ export function HelperHome() {
                   <h3 className="font-bold text-gray-900 text-lg">{request.title || 'New task'}</h3>
                   <p className="text-gray-500 text-sm flex items-center mt-1 mb-1">
                     <MapPin className="w-4 h-4 me-1" /> {request.location || 'Address shared after accepting'}
-                    {formatDistance(request.helper_distance_km) && ` (${formatDistance(request.helper_distance_km)} away)`}
+                    {request.helper_distance_km != null && ` (~${Number(request.helper_distance_km)} km away)`}
                   </p>
                   <div className="flex items-center gap-2">
                     <div className="bg-brand-teal/10 px-2 py-0.5 rounded text-[10px] font-bold text-brand-teal flex items-center gap-1">
@@ -207,7 +228,7 @@ export function HelperHome() {
         <div className="grid grid-cols-2 gap-4">
           <Card className="p-4 text-center hover:-translate-y-1 hover:shadow-md transition-all duration-300">
              <div className="text-2xl font-bold text-gray-900 mb-1">{formatPrice(earnedToday)}</div>
-             <div className="text-xs text-gray-500 font-medium">Earned Today</div>
+             <div className="text-xs text-gray-500 font-medium">Completed Job Value Today</div>
           </Card>
           <Card className="p-4 text-center hover:-translate-y-1 hover:shadow-md transition-all duration-300">
              <div className="text-2xl font-bold text-gray-900 mb-1 flex items-center justify-center"><Star className="w-5 h-5 text-yellow-400 fill-current me-1"/> {myRating ? myRating.toFixed(1) : 'New'}</div>
@@ -215,7 +236,7 @@ export function HelperHome() {
           </Card>
         </div>
 
-        <h2 className="text-lg font-bold text-gray-900 mb-4 mt-8 flex items-center gap-2"><TrendingUp className="w-5 h-5 text-brand-teal" /> Weekly Earnings</h2>
+        <h2 className="text-lg font-bold text-gray-900 mb-4 mt-8 flex items-center gap-2"><TrendingUp className="w-5 h-5 text-brand-teal" /> Weekly Completed Job Value</h2>
         <Card className="p-4 mb-4 hover:shadow-md transition-shadow">
           <div className="h-[200px] w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -224,7 +245,7 @@ export function HelperHome() {
                 <Tooltip 
                   cursor={{ fill: '#F3F4F6' }}
                   contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                  formatter={(value) => [`Rs. ${value}`, 'Earnings']}
+                  formatter={(value) => [`Rs. ${value}`, 'Job value']}
                 />
                 <Bar dataKey="amount" radius={[4, 4, 0, 0]}>
                   {
@@ -284,7 +305,7 @@ export function HelperHome() {
 export function ActiveJobScreen() {
   const navigate = useNavigate();
   const [status, setStatus] = React.useState<
-    "navigating" | "working" | "rating" | "completed"
+    "navigating" | "arrived" | "working" | "rating" | "completed"
   >("navigating");
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState("");
@@ -316,7 +337,9 @@ export function ActiveJobScreen() {
           current = { ...current, status: 'On-the-way' };
         }
         setBooking(current);
-        if (current.status === 'Arrived' || current.status === 'In-progress') {
+        if (current.status === 'Arrived') {
+          setStatus('arrived');
+        } else if (current.status === 'In-progress') {
           setStatus('working');
           setWorkStartedAt(Date.now());
         } else if (current.status === 'Completed') {
@@ -340,10 +363,10 @@ export function ActiveJobScreen() {
     return () => clearInterval(timer);
   }, [status]);
 
-  // Notice if the customer cancels while the helper is on the way
+  // Notice if the customer cancels (Realtime push; polling is a fallback)
   useEffect(() => {
-    if (!bookingId || (status !== 'navigating' && status !== 'working')) return;
-    const timer = setInterval(async () => {
+    if (!bookingId || status === 'rating' || status === 'completed') return;
+    const check = async () => {
       try {
         const latest = await getMyBooking(bookingId);
         if (latest?.status === 'Cancelled') {
@@ -354,8 +377,10 @@ export function ActiveJobScreen() {
       } catch (err) {
         console.warn('Job refresh failed:', err);
       }
-    }, 10000);
-    return () => clearInterval(timer);
+    };
+    const unsubscribe = onBookingsChange(`ID=eq.${bookingId}`, check);
+    const timer = setInterval(check, 20000);
+    return () => { clearInterval(timer); unsubscribe(); };
   }, [bookingId, status]);
 
   useEffect(() => {
@@ -390,7 +415,7 @@ export function ActiveJobScreen() {
   };
   const pad = (v: number) => String(v).padStart(2, '0');
 
-  const advance = async (steps: ('Arrived' | 'In-progress' | 'Completed')[], nextView: 'working' | 'rating') => {
+  const advance = async (steps: ('Arrived' | 'In-progress' | 'Completed')[], nextView: 'arrived' | 'working' | 'rating') => {
     if (!bookingId) return;
     setIsUpdating(true);
     try {
@@ -417,7 +442,7 @@ export function ActiveJobScreen() {
         />
         <div className="absolute inset-0 bg-brand-teal/5 mix-blend-multiply"></div>
         <div 
-          className={`absolute w-12 h-12 rounded-full border-4 border-white shadow-xl flex items-center justify-center z-10 transition-all duration-1000 ease-in-out ${status === 'navigating' ? 'bg-blue-500 top-[30%] left-[30%] animate-pulse' : status === 'working' ? 'bg-brand-orange top-[50%] left-[50%] animate-bounce' : 'bg-green-500 top-[50%] left-[50%]'}`}
+          className={`absolute w-12 h-12 rounded-full border-4 border-white shadow-xl flex items-center justify-center z-10 transition-all duration-1000 ease-in-out ${status === 'navigating' ? 'bg-blue-500 top-[30%] left-[30%] animate-pulse' : status === 'working' || status === 'arrived' ? 'bg-brand-orange top-[50%] left-[50%] animate-bounce' : 'bg-green-500 top-[50%] left-[50%]'}`}
           style={{ transform: 'translate(-50%, -50%)' }}
         >
           <MapPin className="w-6 h-6 text-white" />
@@ -455,10 +480,10 @@ export function ActiveJobScreen() {
                    <AlertTriangle className="w-8 h-8 text-red-500" />
                  </div>
                  <h3 className="text-xl font-bold text-gray-900 mb-2">Are you in an emergency?</h3>
-                 <p className="text-sm text-gray-500 mb-6">This will alert Qareeb Support, share your live GPS location, and record the task identity.</p>
+                 <p className="text-sm text-gray-500 mb-6">In-app SOS alerts are not connected yet. If you are in danger, call Police (15) or Rescue (1122) now.</p>
                  <div className="w-full flex gap-3">
                    <Button variant="outline" className="flex-1" onClick={() => setShowSOS(false)}>Cancel</Button>
-                   <Button variant="danger" className="flex-1" onClick={() => setSosSent(true)}>Trigger SOS</Button>
+                   <Button variant="danger" className="flex-1" onClick={() => { window.location.href = 'tel:15'; setSosSent(true); }}>Call Police (15)</Button>
                  </div>
                </>
              ) : (
@@ -466,10 +491,10 @@ export function ActiveJobScreen() {
                  <div className="w-16 h-16 bg-red-500 rounded-full flex items-center justify-center mb-4">
                    <CheckCircle2 className="w-8 h-8 text-white" />
                  </div>
-                 <h3 className="text-xl font-bold text-gray-900 mb-2">SOS alert sent.</h3>
-                 <p className="text-sm text-gray-500 mb-6">Support has been notified with your location and task details. They will contact you immediately.</p>
+                 <h3 className="text-xl font-bold text-gray-900 mb-2">Calling Police (15)</h3>
+                 <p className="text-sm text-gray-500 mb-6">If the call did not start, dial 15 (Police) or 1122 (Rescue) from your phone. Qareeb Support was not notified automatically.</p>
                  <Button className="w-full bg-gray-900 mb-3" onClick={() => setShowSOS(false)}>Close</Button>
-                 <Button variant="ghost" className="w-full text-brand-teal">Contact Qareeb Support</Button>
+                 <Button variant="ghost" className="w-full text-brand-teal" onClick={() => { window.location.href = 'tel:1122'; }}>Call Rescue (1122)</Button>
                </>
              )}
           </div>
@@ -484,7 +509,9 @@ export function ActiveJobScreen() {
             <h2 className="text-xl font-bold text-gray-900 mb-1">
               {status === "navigating"
                 ? "Navigating to Customer"
-                : status === "working"
+                : status === "arrived"
+                  ? "Arrived at Customer"
+                  : status === "working"
                   ? "Job in Progress"
                   : "Job Completed"}
             </h2>
@@ -515,7 +542,7 @@ export function ActiveJobScreen() {
               </Button>
               <Button
                 className="flex-1 h-12 bg-brand-orange hover:bg-brand-orange-hover shadow-md shadow-brand-orange/20 text-sm"
-                onClick={() => advance(['Arrived', 'In-progress'], 'working')}
+                onClick={() => advance(['Arrived'], 'arrived')}
                 isLoading={isUpdating}
                 disabled={isUpdating || !booking}
               >
@@ -523,6 +550,19 @@ export function ActiveJobScreen() {
               </Button>
             </div>
           </>
+        )}
+
+        {status === "arrived" && (
+          <div className="flex gap-3 mb-2">
+            <Button
+              className="flex-1 h-12 bg-brand-orange hover:bg-brand-orange-hover shadow-md shadow-brand-orange/20 text-sm"
+              onClick={() => advance(['In-progress'], 'working')}
+              isLoading={isUpdating}
+              disabled={isUpdating || !booking}
+            >
+              Start Job
+            </Button>
+          </div>
         )}
 
         {status === "working" && (
@@ -559,7 +599,7 @@ export function ActiveJobScreen() {
           <div className="animate-in slide-in-from-bottom-8 pt-4 pb-8 w-full max-w-sm mx-auto">
             <div className="text-center">
               <h2 className="text-2xl font-bold text-gray-900 mb-1">Rate the Customer</h2>
-              <p className="text-gray-500 text-sm mb-6">How was your experience with Waleed?</p>
+              <p className="text-gray-500 text-sm mb-6">How was your experience with {booking?.counterpart_name || 'this customer'}?</p>
               
               <div className="flex justify-center gap-2 mb-8">
                 {[1, 2, 3, 4, 5].map((star) => (
@@ -588,7 +628,7 @@ export function ActiveJobScreen() {
             </div>
             <div>
               <h3 className="font-bold text-[32px] text-brand-teal mb-1 tracking-tight">{formatPrice(booking?.price)}</h3>
-              <p className="text-sm text-gray-500 font-medium">Job value · in-app payments are not enabled yet</p>
+              <p className="text-sm text-gray-500 font-medium">Job value · paid in cash for now. Confirm receipt in your Wallet.</p>
             </div>
             
             <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100 my-6 flex justify-between items-center text-left">

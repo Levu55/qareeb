@@ -16,6 +16,7 @@ import { AdminJobsScreen } from './features/admin/AdminJobs';
 import { AdminDisputesScreen } from './features/admin/AdminDisputes';
 import { SuperAdminDashboard } from './features/admin/SuperAdminDashboard';
 import { AdminDashboard, AdminCNICQueue, UserManagementScreen } from './features/admin/AdminScreens';
+import { AdminSettingsScreen, AdminAuditLogScreen } from './features/admin/AdminSettings';
 
 import { useAppStore } from './store/useAppStore';
 import { trackPageView } from './utils/analytics';
@@ -77,7 +78,11 @@ export default function App() {
           .eq('ID', user.id)
           .maybeSingle();
 
-        const userRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
+        const profileRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
+        // Helpers can also book as customers: keep "user mode" if they switched to it.
+        // The mode only chooses screens; the database still enforces what each account may do.
+        const currentMode = useAppStore.getState().role;
+        const userRole: Role = profileRole === 'helper' && currentMode === 'user' ? 'user' : profileRole;
         const fullName = user.user_metadata?.full_name || '';
         const userPhone = profile?.Phone || user.phone || '';
         const cnicStatus = getCnicStatus(user);
@@ -181,6 +186,8 @@ export default function App() {
           <Route path="disputes" element={<AdminDisputesScreen />} />
           <Route path="cnic" element={<AdminCNICQueue />} />
           <Route path="users" element={<UserManagementScreen />} />
+          <Route path="settings" element={<AdminSettingsScreen />} />
+          <Route path="logs" element={<AdminAuditLogScreen />} />
           {/* Admins sign in with their real account; the login screen routes admin roles to /admin */}
           <Route path="login" element={<Navigate to="/auth/login" replace />} />
         </Route>

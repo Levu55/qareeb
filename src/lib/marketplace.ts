@@ -142,7 +142,10 @@ export async function createBooking(taskId: string, helperId: string): Promise<s
     .single();
   if (error || !data) {
     if (error?.code === '42501') {
-      fail(null, 'Booking was not allowed. Make sure your CNIC is approved and the task is still open.');
+      // Database rules explain themselves (e.g. service/female-only mismatch); RLS denials do not
+      fail(null, error.message && !error.message.includes('row-level security')
+        ? error.message
+        : 'Booking was not allowed. Make sure your CNIC is approved and the task is still open.');
     }
     if (error?.code === '23505') {
       fail(null, 'This task already has an active booking.');
@@ -150,6 +153,31 @@ export async function createBooking(taskId: string, helperId: string): Promise<s
     fail(error, 'Could not create the booking.');
   }
   return (data as { ID: string }).ID;
+}
+
+/** Cancels one of the signed-in customer's open tasks (only allowed while it has no active booking). */
+export async function cancelTask(taskId: string): Promise<void> {
+  const { data, error } = await supabase
+    .from('Tasks')
+    .update({ Status: 'Cancelled' })
+    .eq('ID', taskId)
+    .select('ID');
+  if (error) fail(error, 'Could not cancel the task.');
+  if (!data || data.length === 0) fail(null, 'This task could not be cancelled.');
+}
+
+/**
+ * Calls onChange whenever a booking matching `filter` (e.g. `ID=eq.<id>`) changes, via Supabase
+ * Realtime. RLS decides which rows are delivered. Returns a function that unsubscribes.
+ */
+export function onBookingsChange(filter: string, onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`bookings-${filter}-${Math.random().toString(36).slice(2, 8)}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'Bookings', filter }, () => onChange())
+    .subscribe();
+  return () => {
+    supabase.removeChannel(channel);
+  };
 }
 
 export async function getMyBookings(): Promise<MyBooking[]> {
@@ -169,6 +197,9 @@ export async function updateBookingStatus(bookingId: string, status: BookingStat
     .update({ Status: status })
     .eq('ID', bookingId)
     .select('ID');
+  if (error?.code === '23505') {
+    fail(null, 'You already have an active job. Finish it before accepting another.');
+  }
   if (error) fail(error, 'Could not update the booking.');
   if (!data || data.length === 0) fail(null, 'This booking could not be updated.');
 }
@@ -345,4 +376,198 @@ export function osmEmbedUrl(coords: Coordinates, span = 0.01): string {
   const { latitude: lat, longitude: lng } = coords;
   const bbox = [lng - span, lat - span, lng + span, lat + span].map((v) => v.toFixed(5)).join('%2C');
   return `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat.toFixed(5)}%2C${lng.toFixed(5)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Payments, wallet and settings. Payment rows are created by the database when a booking
+// completes; clients only read them and act through the functions below. No online payment
+// provider is integrated yet.
+// ---------------------------------------------------------------------------
+
+export type PaymentMethod = 'Cash' | 'Easypaisa' | 'JazzCash' | 'Card';
+export type PaymentStatus = 'Due' | 'Awaiting-confirmation' | 'Paid' | 'Failed';
+
+export interface PaymentRecord {
+  ID: string;
+  'Booking-id': string;
+  'Payer-id': string;
+  'Payee-id': string;
+  Amount: number;
+  Currency: string;
+  Method: PaymentMethod | null;
+  Status: PaymentStatus;
+  'Created-at': string;
+  'Paid-at': string | null;
+}
+
+const PAYMENT_COLUMNS = 'ID,"Booking-id","Payer-id","Payee-id",Amount,Currency,Method,Status,"Created-at","Paid-at"';
+
+export async function getPaymentForBooking(bookingId: string): Promise<PaymentRecord | null> {
+  const { data, error } = await supabase.from('Payments').select(PAYMENT_COLUMNS).eq('Booking-id', bookingId).maybeSingle();
+  if (error) fail(error, 'Could not load the payment.');
+  return data as PaymentRecord | null;
+}
+
+/** Payments where the signed-in user is the payer or the payee, newest first. */
+export async function getMyPayments(): Promise<PaymentRecord[]> {
+  const { data, error } = await supabase.from('Payments').select(PAYMENT_COLUMNS).order('Created-at', { ascending: false }).limit(100);
+  if (error) fail(error, 'Could not load payments.');
+  return (data || []) as PaymentRecord[];
+}
+
+export async function choosePaymentMethod(bookingId: string, method: PaymentMethod): Promise<PaymentStatus> {
+  const { data, error } = await supabase.rpc('qareeb_choose_payment_method', { p_booking_id: bookingId, p_method: method });
+  if (error) fail(error, 'Could not save the payment method.');
+  return data as PaymentStatus;
+}
+
+export async function confirmCashReceived(bookingId: string): Promise<PaymentStatus> {
+  const { data, error } = await supabase.rpc('qareeb_confirm_cash_received', { p_booking_id: bookingId });
+  if (error) fail(error, 'Could not confirm the payment.');
+  return data as PaymentStatus;
+}
+
+/** Jobs above this amount must be paid online (Settings table; config value as fallback). */
+export async function getDigitalPaymentThreshold(fallback: number): Promise<number> {
+  const { data } = await supabase.from('Settings').select('Value').eq('Key', 'digital_payment_threshold').maybeSingle();
+  const value = Number((data as { Value?: unknown } | null)?.Value);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+export interface WalletRecord {
+  Balance: number;
+  Currency: string;
+}
+
+export interface TransactionRecord {
+  ID: string;
+  Type: string | null;
+  Amount: number;
+  Status: string;
+  'Created-at': string | null;
+  'Booking-id': string | null;
+}
+
+export async function getMyWallet(): Promise<WalletRecord | null> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+  const { data, error } = await supabase.from('Wallets').select('Balance,Currency').eq('User-id', user.id).maybeSingle();
+  if (error) fail(error, 'Could not load your wallet.');
+  return data as WalletRecord | null;
+}
+
+export async function getMyTransactions(): Promise<TransactionRecord[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return [];
+  const { data, error } = await supabase
+    .from('Transactions')
+    .select('ID,Type,Amount,Status,"Created-at","Booking-id"')
+    .eq('User-id', user.id)
+    .order('Created-at', { ascending: false })
+    .limit(50);
+  if (error) fail(error, 'Could not load transactions.');
+  return (data || []) as TransactionRecord[];
+}
+
+// ---------------------------------------------------------------------------
+// Booking chat and notifications (RLS limits both to the people involved; delivered by Realtime)
+// ---------------------------------------------------------------------------
+
+export interface MessageRecord {
+  ID: string;
+  'Booking-id': string;
+  'Sender-id': string;
+  Body: string;
+  'Created-at': string;
+  'Read-at': string | null;
+}
+
+export async function getMessages(bookingId: string): Promise<MessageRecord[]> {
+  const { data, error } = await supabase
+    .from('Messages')
+    .select('ID,"Booking-id","Sender-id",Body,"Created-at","Read-at"')
+    .eq('Booking-id', bookingId)
+    .order('Created-at', { ascending: true })
+    .limit(500);
+  if (error) fail(error, 'Could not load messages.');
+  return (data || []) as MessageRecord[];
+}
+
+/** Latest message per booking for the conversation list. */
+export async function getLatestMessages(bookingIds: string[]): Promise<Record<string, MessageRecord>> {
+  if (bookingIds.length === 0) return {};
+  const { data, error } = await supabase
+    .from('Messages')
+    .select('ID,"Booking-id","Sender-id",Body,"Created-at","Read-at"')
+    .in('Booking-id', bookingIds)
+    .order('Created-at', { ascending: false })
+    .limit(500);
+  if (error) fail(error, 'Could not load conversations.');
+  const latest: Record<string, MessageRecord> = {};
+  for (const m of (data || []) as MessageRecord[]) if (!latest[m['Booking-id']]) latest[m['Booking-id']] = m;
+  return latest;
+}
+
+export async function sendMessage(bookingId: string, body: string): Promise<void> {
+  const { error } = await supabase.from('Messages').insert({ 'Booking-id': bookingId, Body: body.trim() });
+  if (error?.code === '42501') fail(null, 'Messages can only be sent while the booking is active (and up to 3 days after completion).');
+  if (error) fail(error, 'Could not send the message.');
+}
+
+export async function markMessagesRead(bookingId: string): Promise<void> {
+  await supabase.rpc('qareeb_mark_messages_read', { p_booking_id: bookingId });
+}
+
+export function onMessagesChange(bookingId: string, onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`messages-${bookingId}-${Math.random().toString(36).slice(2, 8)}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'Messages', filter: `Booking-id=eq.${bookingId}` }, () => onChange())
+    .subscribe();
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
+export interface NotificationRecord {
+  ID: string;
+  Type: string;
+  Title: string;
+  Body: string | null;
+  'Booking-id': string | null;
+  'Created-at': string;
+  'Read-at': string | null;
+}
+
+export async function getNotifications(limit = 30): Promise<NotificationRecord[]> {
+  const { data, error } = await supabase
+    .from('Notifications')
+    .select('ID,Type,Title,Body,"Booking-id","Created-at","Read-at"')
+    .order('Created-at', { ascending: false })
+    .limit(limit);
+  if (error) fail(error, 'Could not load notifications.');
+  return (data || []) as NotificationRecord[];
+}
+
+export async function markNotificationsRead(ids?: string[]): Promise<void> {
+  const { error } = await supabase.rpc('qareeb_mark_notifications_read', { p_ids: ids ?? null });
+  if (error) fail(error, 'Could not update notifications.');
+}
+
+export function onNotificationsChange(userId: string, onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`notifications-${userId}-${Math.random().toString(36).slice(2, 8)}`)
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'Notifications', filter: `User-id=eq.${userId}` }, () => onChange())
+    .subscribe();
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
+export function timeAgo(iso: string): string {
+  const minutes = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
 }
