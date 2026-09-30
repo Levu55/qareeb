@@ -38,6 +38,8 @@ export interface ReviewRepo {
   setHelperVerifyStatus(userId: string, status: 'Approved' | 'Rejected' | 'Pending'): Promise<boolean>;
   listDocuments(userId: string): Promise<StoredFile[]>;
   signedUrls(paths: string[], expiresInSeconds: number): Promise<(string | null)[]>;
+  /** Appends an entry to the admin audit log ("Admin-logs"). */
+  logAction(actorId: string, action: string, targetId: string, details: Record<string, unknown>): Promise<void>;
 }
 
 const CORS_HEADERS = {
@@ -165,6 +167,7 @@ async function revoke(repo: ReviewRepo, callerId: string, body: Record<string, u
   });
 
   const helperUpdated = await repo.setHelperVerifyStatus(userId, 'Pending');
+  await repo.logAction(callerId, 'cnic.revoked', userId, { note, helper_status: helperUpdated ? 'Pending' : null });
 
   return json(200, { ok: true, userId, decision: 'revoked', helperUpdated });
 }
@@ -203,7 +206,9 @@ async function review(repo: ReviewRepo, callerId: string, body: Record<string, u
     cnic_review_note: note || null,
   });
 
-  const helperUpdated = await repo.setHelperVerifyStatus(userId, decision === 'approved' ? 'Approved' : 'Rejected');
+  const helperStatus = decision === 'approved' ? 'Approved' : 'Rejected';
+  const helperUpdated = await repo.setHelperVerifyStatus(userId, helperStatus);
+  await repo.logAction(callerId, `cnic.${decision}`, userId, { note: note || null, helper_status: helperUpdated ? helperStatus : null });
 
   return json(200, { ok: true, userId, decision, helperUpdated });
 }

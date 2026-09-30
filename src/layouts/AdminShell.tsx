@@ -3,7 +3,7 @@ import { Outlet, Navigate } from 'react-router-dom';
 import { useTranslation } from '../locales/useTranslation';
 import { useAppStore } from '../store/useAppStore';
 import { supabase } from '../lib/supabaseClient';
-import { LayoutDashboard, Users, UserCheck, Briefcase, FileWarning, Settings, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, UserCheck, Briefcase, FileWarning, Settings, LogOut, ScrollText } from 'lucide-react';
 
 export function AdminShell() {
   const { language } = useTranslation();
@@ -15,7 +15,7 @@ export function AdminShell() {
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      await supabase.auth.signOut({ scope: 'local' }); // this device only; other devices stay signed in
     } catch (err) {
       console.warn('Supabase signOut error:', err);
     }
@@ -29,6 +29,7 @@ export function AdminShell() {
     { name: 'CNIC Verification', icon: UserCheck, path: '/admin/cnic' },
     { name: 'Jobs', icon: Briefcase, path: '/admin/jobs' },
     { name: 'Disputes', icon: FileWarning, path: '/admin/disputes' },
+    { name: 'Audit Log', icon: ScrollText, path: '/admin/logs' },
     { name: 'Settings', icon: Settings, path: '/admin/settings' },
   ];
 

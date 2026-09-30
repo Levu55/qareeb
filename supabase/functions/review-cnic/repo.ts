@@ -69,6 +69,19 @@ export function createServiceRepo(): ReviewRepo {
       return (data ?? []) as StoredFile[];
     },
 
+    async logAction(actorId, action, targetId, details) {
+      const { data: actor } = await db.from('Profiles').select('Role').eq('ID', actorId).maybeSingle();
+      const { error } = await db.from('Admin-logs').insert({
+        'Actor-id': actorId,
+        'Actor-role': actor?.Role || 'admin',
+        Action: action,
+        'Target-table': 'auth.users',
+        'Target-id': targetId,
+        Details: details,
+      });
+      if (error) throw error;
+    },
+
     async signedUrls(paths, expiresInSeconds) {
       const { data, error } = await db.storage.from(CNIC_BUCKET).createSignedUrls(paths, expiresInSeconds);
       if (error) throw error;

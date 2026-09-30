@@ -35,6 +35,7 @@ function makeRepo() {
     [HELPER]: [{ name: 'front_9.png', created_at: '2026-09-03T00:00:01Z' }],
   };
   const signedFor: string[] = [];
+  const logs: { actorId: string; action: string; targetId: string; details: Record<string, unknown> }[] = [];
   const tokens: Record<string, string> = { 'jwt-admin': ADMIN, 'jwt-user': USER, 'jwt-helper': HELPER };
 
   const repo: ReviewRepo = {
@@ -51,8 +52,9 @@ function makeRepo() {
     },
     listDocuments: (id) => Promise.resolve(files[id] ?? []),
     signedUrls: (paths) => { signedFor.push(...paths); return Promise.resolve(paths.map((p) => `https://signed.example/${p}`)); },
+    logAction: (actorId, action, targetId, details) => { logs.push({ actorId, action, targetId, details }); return Promise.resolve(); },
   };
-  return { repo, users, helperStatus, signedFor };
+  return { repo, users, helperStatus, signedFor, logs };
 }
 
 function call(repo: ReviewRepo, token: string | null, body: unknown, method = 'POST') {
@@ -182,4 +184,22 @@ Deno.test('revoke: validation and permissions', async () => {
   assertEquals((await call(repo, 'jwt-admin', { action: 'revoke', userId: ADMIN, note: 'x' })).status, 403, 'self');
   assertEquals((await call(repo, 'jwt-user', { action: 'revoke', userId: USER, note: 'x' })).status, 403, 'non-admin');
   assertEquals((await call(repo, 'jwt-admin', { action: 'revoke', userId: 'bad', note: 'x' })).status, 400, 'bad id');
+});
+
+Deno.test('audit log: every decision is logged with the acting admin; refused calls log nothing', async () => {
+  const { repo, logs } = makeRepo();
+  await call(repo, 'jwt-user', { action: 'review', userId: HELPER, decision: 'approved' });
+  await call(repo, 'jwt-admin', { action: 'review', userId: ADMIN, decision: 'approved' });
+  assertEquals(logs.length, 0, 'refused calls');
+
+  await call(repo, 'jwt-admin', { action: 'review', userId: HELPER, decision: 'rejected', note: 'blurry' });
+  await call(repo, 'jwt-admin', { action: 'review', userId: USER, decision: 'approved' });
+  await call(repo, 'jwt-admin', { action: 'revoke', userId: USER, note: 'recheck' });
+  assertEquals(logs.map((l) => [l.actorId, l.action, l.targetId]), [
+    [ADMIN, 'cnic.rejected', HELPER],
+    [ADMIN, 'cnic.approved', USER],
+    [ADMIN, 'cnic.revoked', USER],
+  ]);
+  assertEquals(logs[0].details, { note: 'blurry', helper_status: 'Rejected' });
+  assertEquals(logs[2].details, { note: 'recheck', helper_status: null });
 });
