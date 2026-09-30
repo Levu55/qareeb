@@ -207,7 +207,8 @@ export async function uploadCNICDocument(
       .from('cnic-verifications')
       .upload(filePath, file, {
         cacheControl: '3600',
-        upsert: true,
+        // Documents are write-once (no storage UPDATE policy); each upload has a unique name
+        upsert: false,
       });
 
     if (error) {
