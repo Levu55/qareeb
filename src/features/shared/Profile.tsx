@@ -51,14 +51,14 @@ export function ProfileScreen() {
     }
   };
 
-  const { role, logout, userName, isHelper, switchRole } = useAppStore();
+  const { role, logout, userName, isHelper, switchRole, cnicStatus } = useAppStore();
   const navigate = useNavigate();
   
   const displayName = userName || 'User';
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      await supabase.auth.signOut({ scope: 'local' }); // this device only; other devices stay signed in
     } catch (err) {
       console.warn('Supabase signOut error:', err);
     }
@@ -87,24 +87,21 @@ export function ProfileScreen() {
          <h1 className="text-2xl font-bold text-gray-900">{displayName}</h1>
          <p className="text-gray-500">{role === 'user' ? 'Customer' : 'Pro Helper'}</p>
          
-         {role === 'helper' && (
+         {/* CNIC state comes from the admin review (auth app_metadata) */}
+         {cnicStatus === 'approved' ? (
            <div className="mt-4 inline-flex items-center bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">
              <Shield className="w-4 h-4 me-1" />
              Verified CNIC
+           </div>
+         ) : (
+           <div className="mt-4 inline-flex items-center bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-sm font-medium">
+             <AlertTriangle className="w-4 h-4 me-1" />
+             {cnicStatus === 'pending' ? 'CNIC under review' : cnicStatus === 'rejected' ? 'CNIC rejected' : 'CNIC not verified'}
            </div>
          )}
       </div>
 
       <div className="p-6 space-y-2">
-         {role === 'helper' && (
-           <Card className="p-4 mb-4 border-l-4 border-l-red-500 bg-red-50 flex gap-3">
-              <AlertTriangle className="w-6 h-6 text-red-500 flex-shrink-0" />
-              <div>
-                <h4 className="font-bold text-red-900 text-sm">Account Status: 1 Strike</h4>
-                <p className="text-xs text-red-700 mt-1">You missed a scheduled job. 3 strikes will result in a temporary ban.</p>
-              </div>
-           </Card>
-         )}
 
          <button onClick={() => navigate(`/${role}/profile/details`)} className="w-full bg-white p-4 rounded-2xl flex items-center justify-between text-gray-700 font-medium hover:border-brand-teal/30 border border-transparent shadow-sm active:scale-[0.98] transition-all">
            <div className="flex items-center"><User className="w-5 h-5 me-3 text-gray-400" /> Personal Details</div>
@@ -151,11 +148,43 @@ export function ProfileScreen() {
 
 export function PersonalDetailsScreen() {
   const navigate = useNavigate();
-  const { userName, phone: userPhone, user } = useAppStore();
+  const { userName, phone: userPhone, user, addToast } = useAppStore();
   const [name, setName] = useState(userName || '');
-  const [email, setEmail] = useState(user?.email || '');
-  const [phone, setPhone] = useState(userPhone || user?.phone || '');
-  
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The phone number is the verified sign-in number; the database keeps Profiles.Phone equal to it
+  const phone = userPhone || (user?.phone ? `+${String(user.phone).replace(/^\+/, '')}` : '');
+
+  const handleSave = async () => {
+    const trimmed = name.trim();
+    if (trimmed.length < 2) {
+      setError('Please enter your full name.');
+      return;
+    }
+    setIsSaving(true);
+    setError(null);
+    try {
+      const { data: { user: current } } = await supabase.auth.getUser();
+      if (!current) throw new Error('Please sign in again.');
+      const { data, error: profileError } = await supabase
+        .from('Profiles')
+        .update({ 'Full-name': trimmed })
+        .eq('ID', current.id)
+        .select('ID');
+      if (profileError) throw profileError;
+      if (!data || data.length === 0) throw new Error('Profile not found.');
+      const { error: metaError } = await supabase.auth.updateUser({ data: { full_name: trimmed } });
+      if (metaError) throw metaError;
+      useAppStore.setState({ userName: trimmed });
+      addToast('Your details have been saved.');
+      navigate(-1);
+    } catch (err: any) {
+      setError(err?.message || 'Could not save your details.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   return (
     <div className="flex-1 bg-gray-50 flex flex-col h-full overflow-y-auto">
       <div className="bg-white px-4 py-4 md:px-8 border-b flex items-center gap-4 sticky top-0 z-20 shadow-sm shrink-0">
@@ -168,15 +197,9 @@ export function PersonalDetailsScreen() {
         <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
           <div className="space-y-4">
             <div className="flex flex-col items-center mb-6">
-              <div className="relative">
-                <img src={`https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'Waleed')}&background=FF6B2C&color=fff`} className="w-24 h-24 rounded-full shadow-sm border border-gray-100" />
-                <button className="absolute bottom-0 right-0 p-1.5 bg-brand-orange text-white rounded-full shadow-md border-2 border-white hover:bg-brand-orange-hover transition-colors">
-                  <SwitchCamera className="w-4 h-4" />
-                </button>
-              </div>
-              <span className="text-sm text-brand-teal font-medium mt-3 cursor-pointer">Change Profile Photo</span>
+              <img src={`https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'User')}&background=FF6B2C&color=fff`} className="w-24 h-24 rounded-full shadow-sm border border-gray-100" />
             </div>
-            
+
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2">Full Name</label>
               <div className="relative">
@@ -185,21 +208,16 @@ export function PersonalDetailsScreen() {
               </div>
             </div>
             <div>
-              <label className="block text-sm font-bold text-gray-700 mb-2">Email Address</label>
-              <div className="relative">
-                <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <Input value={email} onChange={e => setEmail(e.target.value)} className="pl-12 bg-gray-50 border-gray-200" type="email" />
-              </div>
-            </div>
-            <div>
               <label className="block text-sm font-bold text-gray-700 mb-2">Phone Number</label>
               <div className="relative">
                 <Phone className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                <Input value={phone} onChange={e => setPhone(e.target.value)} className="pl-12 bg-gray-50 border-gray-200" type="tel" />
+                <Input value={phone} readOnly disabled className="pl-12 bg-gray-100 border-gray-200 text-gray-500" type="tel" />
               </div>
+              <p className="text-xs text-gray-500 mt-1">This is your verified sign-in number and cannot be changed here.</p>
             </div>
           </div>
-          <Button className="w-full mt-6 h-12 text-base shadow-md shadow-brand-orange/20" onClick={() => navigate(-1)}>
+          {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+          <Button className="w-full mt-6 h-12 text-base shadow-md shadow-brand-orange/20" onClick={handleSave} isLoading={isSaving} disabled={isSaving}>
             Save Changes
           </Button>
         </div>
@@ -211,11 +229,8 @@ export function PersonalDetailsScreen() {
 export function SavedPaymentMethodsScreen() {
   const navigate = useNavigate();
   const role = useAppStore(state => state.role);
-  const [selectedMethod, setSelectedMethod] = useState<string>('visa');
-  const addToast = useAppStore(state => state.addToast);
-  const [isAdding, setIsAdding] = useState(false);
 
-  
+  // No payment provider is integrated yet, so no card/bank/wallet details are collected or stored
   return (
     <div className="flex-1 bg-gray-50 flex flex-col h-full overflow-y-auto">
       <div className="bg-white px-4 py-4 md:px-8 border-b flex items-center gap-4 sticky top-0 z-20 shadow-sm shrink-0">
@@ -225,84 +240,17 @@ export function SavedPaymentMethodsScreen() {
         <h2 className="text-xl font-bold text-gray-900">{role === 'helper' ? 'Payout Details' : 'Payment Methods'}</h2>
       </div>
       <div className="p-4 md:p-8 space-y-4 max-w-2xl mx-auto w-full">
-        <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider ml-2">Saved Cards</h3>
-        <Card 
-          onClick={() => setSelectedMethod('visa')}
-          className={`p-4 border-2 flex items-center gap-4 cursor-pointer transition-colors ${selectedMethod === 'visa' ? 'border-brand-teal bg-teal-50/20' : 'border-transparent hover:border-gray-200'}`}
-        >
-           <div className="w-12 h-8 bg-blue-900 rounded border border-blue-800 flex items-center justify-center text-white text-xs font-bold font-serif italic">VISA</div>
-           <div className="flex-1">
-             <p className="font-bold text-gray-900">•••• •••• •••• 4242</p>
-             <p className="text-xs text-gray-500">Expires 12/28</p>
-           </div>
-           <div className={`w-5 h-5 rounded-full flex items-center justify-center ${selectedMethod === 'visa' ? 'bg-brand-teal' : 'border-2 border-gray-300'}`}>
-             {selectedMethod === 'visa' && <Check className="w-3.5 h-3.5 text-white" />}
-           </div>
+        <Card className="p-6 text-center">
+          <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4 text-gray-500">
+            {role === 'helper' ? <Landmark className="w-7 h-7" /> : <CreditCard className="w-7 h-7" />}
+          </div>
+          <h3 className="font-bold text-gray-900 mb-2">{role === 'helper' ? 'Payouts are not available yet' : 'Saved payment methods are not available yet'}</h3>
+          <p className="text-sm text-gray-500">
+            {role === 'helper'
+              ? 'Customers currently pay you in cash. Bank and mobile-wallet payouts will be added with online payments.'
+              : 'Jobs are currently paid in cash. Easypaisa, JazzCash and card payments will be added once online payments launch.'}
+          </p>
         </Card>
-        
-                <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider ml-2 mt-6">Bank Accounts</h3>
-        <Card 
-          onClick={() => setSelectedMethod('bank')}
-          className={`p-4 border-2 flex items-center gap-4 cursor-pointer transition-colors ${selectedMethod === 'bank' ? 'border-brand-teal bg-teal-50/20' : 'border-transparent hover:border-gray-200'}`}
-        >
-           <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 border border-gray-200">
-             <Landmark className="w-6 h-6"/>
-           </div>
-           <div className="flex-1">
-             <p className="font-bold text-gray-900">Habib Bank Limited (HBL)</p>
-             <p className="text-xs text-gray-500">PK34HABB••••••1234</p>
-           </div>
-           <div className={`w-5 h-5 rounded-full flex items-center justify-center ${selectedMethod === 'bank' ? 'bg-brand-teal' : 'border-2 border-gray-300'}`}>
-             {selectedMethod === 'bank' && <Check className="w-3.5 h-3.5 text-white" />}
-           </div>
-        </Card>
-        
-<h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider ml-2 mt-6">Mobile Wallets</h3>
-        <Card 
-          onClick={() => setSelectedMethod('easypaisa')}
-          className={`p-4 border-2 flex items-center gap-4 cursor-pointer transition-colors ${selectedMethod === 'easypaisa' ? 'border-brand-teal bg-teal-50/20' : 'border-transparent hover:border-gray-200'}`}
-        >
-           <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Easypaisa_Digital_Bank_logo.png/500px-Easypaisa_Digital_Bank_logo.png" alt="Easypaisa" className="w-12 h-12 object-contain" />
-           <div className="flex-1">
-             <p className="font-bold text-gray-900">Waleed Ahmed</p>
-             <p className="text-xs text-gray-500">0300 ••••567</p>
-           </div>
-           <div className={`w-5 h-5 rounded-full flex items-center justify-center ${selectedMethod === 'easypaisa' ? 'bg-brand-teal' : 'border-2 border-gray-300'}`}>
-             {selectedMethod === 'easypaisa' && <Check className="w-3.5 h-3.5 text-white" />}
-           </div>
-        </Card>
-        
-        <Card 
-          onClick={() => setSelectedMethod('jazzcash')}
-          className={`p-4 border-2 flex items-center gap-4 cursor-pointer transition-colors ${selectedMethod === 'jazzcash' ? 'border-brand-teal bg-teal-50/20' : 'border-transparent hover:border-gray-200'}`}
-        >
-           <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/JazzCash_logo_%282025%29.png/500px-JazzCash_logo_%282025%29.png" alt="JazzCash" className="w-12 h-12 object-contain" />
-           <div className="flex-1">
-             <p className="font-bold text-gray-900">Waleed Ahmed</p>
-             <p className="text-xs text-gray-500">0300 ••••567</p>
-           </div>
-           <div className={`w-5 h-5 rounded-full flex items-center justify-center ${selectedMethod === 'jazzcash' ? 'bg-brand-teal' : 'border-2 border-gray-300'}`}>
-             {selectedMethod === 'jazzcash' && <Check className="w-3.5 h-3.5 text-white" />}
-           </div>
-        </Card>
-
-                {isAdding ? (
-           <div className="mt-6 p-4 border border-gray-200 rounded-xl bg-white space-y-4 animate-in fade-in slide-in-from-bottom-4">
-             <h4 className="font-bold text-gray-900">{role === 'helper' ? 'Add Payout Method' : 'Add New Payment Method'}</h4>
-             <Input placeholder={role === 'helper' ? 'IBAN, Card Number or Wallet ID' : 'Card Number or Wallet ID'} className="bg-gray-50" />
-             <div className="flex gap-2">
-               <Button variant="secondary" className="flex-1" onClick={() => setIsAdding(false)}>Cancel</Button>
-               <Button className="flex-1 shadow-md shadow-brand-teal/20" onClick={() => {
-                 setIsAdding(false);
-                 addToast('New payment method added successfully!');
-               }}>Save</Button>
-             </div>
-           </div>
-        ) : (
-          <button onClick={() => setIsAdding(true)} className="w-full mt-6 py-4 rounded-xl border-2 border-dashed border-gray-300 text-gray-500 font-bold flex items-center justify-center gap-2 hover:bg-gray-100 hover:text-gray-700 transition-colors">
-            <Plus className="w-5 h-5" /> {role === 'helper' ? 'Add Payout Method' : 'Add New Payment Method'}
-          </button>
-        )}
       </div>
     </div>
   );
