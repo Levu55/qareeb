@@ -7,6 +7,7 @@ import { SendPKAdapter } from './adapters/sendpk.ts';
 import { VeevoTechAdapter } from './adapters/veevotech.ts';
 import { AiSMSAdapter } from './adapters/aisms.ts';
 import { DevLogAdapter } from './adapters/devlog.ts';
+import { isPakistaniMobile, redactSecrets, toPakistaniMsisdn } from './adapters/phone.ts';
 
 export function getAdapter(providerName?: string): SMSAdapter {
   const normalized = (providerName || Deno.env.get('SMS_PROVIDER') || 'sendpk').toLowerCase().trim();
@@ -117,18 +118,39 @@ export async function handleSendSmsHook(req: Request): Promise<Response> {
     );
   }
 
-  const adapter = getAdapter();
-  console.log(`[Qareeb SMS Hook] Dispatching OTP via ${adapter.name} to ${phone.slice(0, 5)}****`);
+  // Supabase Auth accepts any number; paid OTP SMS go to Pakistani mobiles only
+  // (also stops SMS-pumping through foreign or premium-rate numbers)
+  const recipient = toPakistaniMsisdn(phone);
+  if (!isPakistaniMobile(recipient)) {
+    console.warn(`[Qareeb SMS Hook] Refused OTP for a number that is not a Pakistani mobile (${recipient.slice(0, 4)}****)`);
+    return new Response(
+      JSON.stringify({
+        error: {
+          http_code: 400,
+          message: 'Phone verification is only available for Pakistani mobile numbers (03XX XXXXXXX).',
+        },
+      }),
+      {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
+  }
 
-  const result = await adapter.send(phone, otp);
+  const adapter = getAdapter();
+  console.log(`[Qareeb SMS Hook] Dispatching OTP via ${adapter.name} to ${recipient.slice(0, 5)}****`);
+
+  const result = await adapter.send(recipient, otp);
 
   if (!result.success) {
-    console.error(`[Qareeb SMS Hook] Dispatch failed via ${adapter.name}:`, result.error);
+    // Provider errors can contain request URLs (API keys) or echo the message (OTP)
+    const detail = redactSecrets(result.error || 'Failed to dispatch SMS via regional provider.', otp);
+    console.error(`[Qareeb SMS Hook] Dispatch failed via ${adapter.name}:`, detail);
     return new Response(
       JSON.stringify({
         error: {
           http_code: 500,
-          message: result.error || 'Failed to dispatch SMS via regional provider.',
+          message: detail,
         },
       }),
       {

@@ -37,6 +37,7 @@ function makeRepo() {
   const signedFor: string[] = [];
   const logs: { actorId: string; action: string; targetId: string; details: Record<string, unknown> }[] = [];
   const tokens: Record<string, string> = { 'jwt-admin': ADMIN, 'jwt-user': USER, 'jwt-helper': HELPER };
+  const notes: { userId: string; type: string; title: string; body: string }[] = [];
 
   const repo: ReviewRepo = {
     getCallerId: (jwt) => Promise.resolve(tokens[jwt] ?? null),
@@ -53,8 +54,9 @@ function makeRepo() {
     listDocuments: (id) => Promise.resolve(files[id] ?? []),
     signedUrls: (paths) => { signedFor.push(...paths); return Promise.resolve(paths.map((p) => `https://signed.example/${p}`)); },
     logAction: (actorId, action, targetId, details) => { logs.push({ actorId, action, targetId, details }); return Promise.resolve(); },
+    notify: (userId, type, title, body) => { notes.push({ userId, type, title, body }); return Promise.resolve(); },
   };
-  return { repo, users, helperStatus, signedFor, logs };
+  return { repo, users, helperStatus, signedFor, logs, notes };
 }
 
 function call(repo: ReviewRepo, token: string | null, body: unknown, method = 'POST') {
@@ -202,4 +204,31 @@ Deno.test('audit log: every decision is logged with the acting admin; refused ca
   ]);
   assertEquals(logs[0].details, { note: 'blurry', helper_status: 'Rejected' });
   assertEquals(logs[2].details, { note: 'recheck', helper_status: null });
+});
+
+Deno.test('notifications: each decision tells the user; refused calls notify nobody', async () => {
+  const { repo, notes } = makeRepo();
+  await call(repo, 'jwt-user', { action: 'review', userId: HELPER, decision: 'approved' });
+  await call(repo, 'jwt-admin', { action: 'review', userId: ADMIN, decision: 'approved' });
+  assertEquals(notes.length, 0, 'refused calls');
+
+  await call(repo, 'jwt-admin', { action: 'review', userId: HELPER, decision: 'approved' });
+  await call(repo, 'jwt-admin', { action: 'review', userId: USER, decision: 'rejected', note: 'Photo is blurry' });
+  await call(repo, 'jwt-admin', { action: 'revoke', userId: HELPER, note: 'Approved by mistake.' });
+  assertEquals(notes.map((n) => [n.userId, n.type]), [
+    [HELPER, 'cnic_approved'],
+    [USER, 'cnic_rejected'],
+    [HELPER, 'cnic_revoked'],
+  ]);
+  assertEquals(notes[0].body, 'Your CNIC was approved. You can now receive and accept jobs.');
+  assertEquals(notes[1].body, 'Your CNIC could not be verified: Photo is blurry. Please upload clear photos again.');
+  assertEquals(notes[2].body, 'Your CNIC verification was withdrawn: Approved by mistake. Please submit your CNIC again.');
+});
+
+Deno.test('notifications: a failed notification does not fail the saved decision', async () => {
+  const { repo, users } = makeRepo();
+  repo.notify = () => Promise.reject(new Error('insert failed'));
+  const r = await call(repo, 'jwt-admin', { action: 'review', userId: USER, decision: 'approved' });
+  assertEquals(r.status, 200);
+  assertEquals(users.get(USER)!.app_metadata!.cnic_status, 'approved');
 });

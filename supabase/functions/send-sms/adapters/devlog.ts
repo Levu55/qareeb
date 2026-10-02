@@ -1,4 +1,7 @@
-import { SMSAdapter, SendResult } from './types.ts';
+import type { SMSAdapter, SendResult } from './types.ts';
+import { toPakistaniMsisdn } from './phone.ts';
+
+export { toPakistaniMsisdn };
 
 // DEVELOPMENT ONLY - no SMS is ever sent by this adapter.
 //
@@ -11,15 +14,6 @@ import { SMSAdapter, SendResult } from './types.ts';
 // - Only numbers listed in SMS_DEV_ALLOWED_PHONES (comma-separated) are accepted.
 //   Every other number gets an error, so real users are never told a code was sent.
 // - Never reports a provider message id; the log states that no SMS was sent.
-
-/** Formats a phone number as a Pakistani MSISDN (923XXXXXXXXX) for comparison. */
-export function toPakistaniMsisdn(raw: string): string {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.startsWith('0092')) return digits.slice(2);
-  if (digits.startsWith('03')) return '92' + digits.slice(1);
-  if (digits.startsWith('3') && digits.length === 10) return '92' + digits;
-  return digits;
-}
 
 export class DevLogAdapter implements SMSAdapter {
   name = 'DevLog (development only, no SMS sent)';

@@ -94,6 +94,28 @@ Deno.test('method handling and payload validation', async () => {
   assertEquals(r.status, 400);
 });
 
+Deno.test('refuses OTPs for numbers that are not Pakistani mobiles, without calling the provider', async () => {
+  setEnv({ SEND_SMS_HOOK_SECRET: HOOK_SECRET, SMS_PROVIDER: 'sendpk', SENDPK_API_KEY: 'k', SENDPK_TEMPLATE_ID: 't' });
+  const calls = stubFetch('OK ID:1');
+  for (const phone of ['14155550123', '447700900123', '92421234567']) {
+    const r = await run(hookRequest({ user: { id: 'u1', phone }, sms: { otp: '482913' } }));
+    assertEquals(r.status, 400, phone);
+  }
+  assertEquals(calls.length, 0, 'no provider call');
+  globalThis.fetch = realFetch;
+});
+
+Deno.test('provider failures never return the API key or the OTP', async () => {
+  setEnv({ SEND_SMS_HOOK_SECRET: HOOK_SECRET, SMS_PROVIDER: 'sendpk', SENDPK_API_KEY: 'SECRET123', SENDPK_TEMPLATE_ID: 't' });
+  globalThis.fetch = ((input: string | URL | Request) =>
+    Promise.reject(new TypeError(`error sending request for url (${String(input)})`))) as typeof fetch;
+  const r = await run(hookRequest(PAYLOAD));
+  assertEquals(r.status, 500);
+  const text = JSON.stringify(r.body);
+  assert(!text.includes('SECRET123') && !text.includes('482913'), `leaked: ${text}`);
+  globalThis.fetch = realFetch;
+});
+
 // ---------- SendPK (production provider) ----------
 
 Deno.test('SendPK: signed hook sends api_key + template request and returns 200 on "OK ID"', async () => {

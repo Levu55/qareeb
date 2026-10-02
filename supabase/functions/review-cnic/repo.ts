@@ -82,6 +82,11 @@ export function createServiceRepo(): ReviewRepo {
       if (error) throw error;
     },
 
+    async notify(userId, type, title, body) {
+      const { error } = await db.from('Notifications').insert({ 'User-id': userId, Type: type, Title: title, Body: body });
+      if (error) throw error;
+    },
+
     async signedUrls(paths, expiresInSeconds) {
       const { data, error } = await db.storage.from(CNIC_BUCKET).createSignedUrls(paths, expiresInSeconds);
       if (error) throw error;

@@ -40,6 +40,21 @@ export interface ReviewRepo {
   signedUrls(paths: string[], expiresInSeconds: number): Promise<(string | null)[]>;
   /** Appends an entry to the admin audit log ("Admin-logs"). */
   logAction(actorId: string, action: string, targetId: string, details: Record<string, unknown>): Promise<void>;
+  /** Adds an in-app notification for the user ("Notifications"). */
+  notify(userId: string, type: string, title: string, body: string): Promise<void>;
+}
+
+function asSentence(text: string): string {
+  return text.replace(/[.!?]?$/, '.');
+}
+
+/** The decision is already saved; a failed notification must not undo or fail it. */
+async function notifySafely(repo: ReviewRepo, userId: string, type: string, title: string, body: string) {
+  try {
+    await repo.notify(userId, type, title, body);
+  } catch (err) {
+    console.error('[review-cnic] could not notify the user:', err instanceof Error ? err.message : err);
+  }
 }
 
 const CORS_HEADERS = {
@@ -168,6 +183,8 @@ async function revoke(repo: ReviewRepo, callerId: string, body: Record<string, u
 
   const helperUpdated = await repo.setHelperVerifyStatus(userId, 'Pending');
   await repo.logAction(callerId, 'cnic.revoked', userId, { note, helper_status: helperUpdated ? 'Pending' : null });
+  await notifySafely(repo, userId, 'cnic_revoked', 'Verification withdrawn',
+    `Your CNIC verification was withdrawn: ${asSentence(note)} Please submit your CNIC again.`);
 
   return json(200, { ok: true, userId, decision: 'revoked', helperUpdated });
 }
@@ -209,6 +226,13 @@ async function review(repo: ReviewRepo, callerId: string, body: Record<string, u
   const helperStatus = decision === 'approved' ? 'Approved' : 'Rejected';
   const helperUpdated = await repo.setHelperVerifyStatus(userId, helperStatus);
   await repo.logAction(callerId, `cnic.${decision}`, userId, { note: note || null, helper_status: helperUpdated ? helperStatus : null });
+  if (decision === 'approved') {
+    await notifySafely(repo, userId, 'cnic_approved', 'CNIC verified',
+      helperUpdated ? 'Your CNIC was approved. You can now receive and accept jobs.' : 'Your CNIC was approved. You can now book helpers.');
+  } else {
+    await notifySafely(repo, userId, 'cnic_rejected', 'CNIC not approved',
+      `Your CNIC could not be verified: ${asSentence(note)} Please upload clear photos again.`);
+  }
 
   return json(200, { ok: true, userId, decision, helperUpdated });
 }

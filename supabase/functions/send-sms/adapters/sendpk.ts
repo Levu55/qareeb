@@ -1,4 +1,5 @@
-import { SMSAdapter, SendResult } from './types.ts';
+import type { SMSAdapter, SendResult } from './types.ts';
+import { PROVIDER_TIMEOUT_MS, toPakistaniMsisdn } from './phone.ts';
 
 // SendPK API reference: https://sendpk.com/api.php
 // Current auth is api_key + an approved OTP template (template_id). Template variables
@@ -29,12 +30,7 @@ export class SendPKAdapter implements SMSAdapter {
     }
 
     // Format phone number for Pakistani networks: 923XXXXXXXXX
-    const cleanNumber = to.replace(/\D/g, '');
-    const recipient = cleanNumber.startsWith('92')
-      ? cleanNumber
-      : cleanNumber.startsWith('03')
-      ? '92' + cleanNumber.slice(1)
-      : cleanNumber;
+    const recipient = toPakistaniMsisdn(to);
 
     const params = new URLSearchParams({ sender, mobile: recipient });
     if (apiKey) {
@@ -44,12 +40,13 @@ export class SendPKAdapter implements SMSAdapter {
     } else {
       params.set('username', username!);
       params.set('password', password!);
-      params.set('message', `Your Qareeb verification code is: ${otp}. Valid for 10 minutes. Please do not share this code with anyone.`);
+      params.set('message', `Your Qareeb verification code is: ${otp}. It expires shortly. Please do not share this code with anyone.`);
     }
 
     try {
       const response = await fetch(`https://sendpk.com/api/sms.php?${params.toString()}`, {
         method: 'GET',
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
         headers: { 'Accept': 'text/plain' },
       });
       const responseText = (await response.text()).trim();

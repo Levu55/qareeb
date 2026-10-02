@@ -53,7 +53,8 @@ export function WalletScreen() {
   // Helper mode shows money received for jobs; user mode shows what this account paid
   const mine = payments.filter(p => (isHelper ? p['Payee-id'] === userId : p['Payer-id'] === userId));
   const paidTotal = mine.filter(p => p.Status === 'Paid').reduce((sum, p) => sum + Number(p.Amount), 0);
-  const openPayments = mine.filter(p => p.Status === 'Due' || p.Status === 'Awaiting-confirmation');
+  // A failed online attempt leaves the job unpaid
+  const openPayments = mine.filter(p => p.Status === 'Due' || p.Status === 'Awaiting-confirmation' || p.Status === 'Failed');
   const openTotal = openPayments.reduce((sum, p) => sum + Number(p.Amount), 0);
 
   const handleConfirm = async (payment: PaymentRecord) => {

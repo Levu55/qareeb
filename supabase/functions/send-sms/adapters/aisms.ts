@@ -1,4 +1,5 @@
-import { SMSAdapter, SendResult } from './types.ts';
+import type { SMSAdapter, SendResult } from './types.ts';
+import { PROVIDER_TIMEOUT_MS, toPakistaniMsisdn } from './phone.ts';
 
 export class AiSMSAdapter implements SMSAdapter {
   name = 'AiSMS';
@@ -14,14 +15,10 @@ export class AiSMSAdapter implements SMSAdapter {
       };
     }
 
-    const cleanNumber = to.replace(/\D/g, '');
-    const recipient = cleanNumber.startsWith('92')
-      ? cleanNumber
-      : cleanNumber.startsWith('03')
-      ? '92' + cleanNumber.slice(1)
-      : cleanNumber;
+    // Format phone number for Pakistani networks: 923XXXXXXXXX
+    const recipient = toPakistaniMsisdn(to);
 
-    const message = `Your Qareeb verification code is: ${otp}. Valid for 10 minutes. Please do not share this code with anyone.`;
+    const message = `Your Qareeb verification code is: ${otp}. It expires shortly. Please do not share this code with anyone.`;
 
     const endpoint = 'https://api.aisms.net/sms/send';
     const body = {
@@ -34,6 +31,7 @@ export class AiSMSAdapter implements SMSAdapter {
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',

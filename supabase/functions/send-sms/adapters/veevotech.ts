@@ -1,4 +1,5 @@
-import { SMSAdapter, SendResult } from './types.ts';
+import type { SMSAdapter, SendResult } from './types.ts';
+import { PROVIDER_TIMEOUT_MS, toPakistaniMsisdn } from './phone.ts';
 
 export class VeevoTechAdapter implements SMSAdapter {
   name = 'VeevoTech';
@@ -15,14 +16,9 @@ export class VeevoTechAdapter implements SMSAdapter {
     }
 
     // Format phone number for Pakistani networks: 923XXXXXXXXX
-    const cleanNumber = to.replace(/\D/g, '');
-    const recipient = cleanNumber.startsWith('92')
-      ? cleanNumber
-      : cleanNumber.startsWith('03')
-      ? '92' + cleanNumber.slice(1)
-      : cleanNumber;
+    const recipient = toPakistaniMsisdn(to);
 
-    const message = `Your Qareeb verification code is: ${otp}. Valid for 10 minutes. Please do not share this code with anyone.`;
+    const message = `Your Qareeb verification code is: ${otp}. It expires shortly. Please do not share this code with anyone.`;
 
     const endpoint = 'https://api.veevotech.com/v3/sendsms';
     const body = {
@@ -35,6 +31,7 @@ export class VeevoTechAdapter implements SMSAdapter {
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
@@ -58,14 +55,16 @@ export class VeevoTechAdapter implements SMSAdapter {
         };
       }
 
-      const isSuccess = responseJson?.status === 'success' || 
+      // \b keeps "unsuccessful" from counting as success
+      const isSuccess = responseJson?.status === 'success' ||
                         responseJson?.code === '200' ||
-                        responseText.toLowerCase().includes('success');
+                        /\bsuccess/i.test(responseText);
 
-      if (!isSuccess && (responseJson?.error || responseJson?.message)) {
+      // Fail closed: a response without a success indicator is never reported as sent
+      if (!isSuccess) {
         return {
           success: false,
-          error: `Veevo Tech error: ${responseJson.error || responseJson.message || responseText}`,
+          error: `Veevo Tech error: ${responseJson?.error || responseJson?.message || responseText || 'unrecognised response'}`,
           rawResponse: responseJson || responseText,
         };
       }
