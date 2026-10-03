@@ -1,30 +1,91 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
+import { SERVICE_CATEGORIES } from '../../config/businessLogic';
 import { Input } from '../../components/ui/Input';
 import { useAppStore } from '../../store/useAppStore';
 import { ArrowLeft, CheckCircle2, ShieldCheck, Upload } from 'lucide-react';
+import { supabase } from '../../lib/supabaseClient';
+import { normalizePhoneNumber, syncUserProfile, uploadCNICDocument, validateCnicImage, CNIC_ALLOWED_TYPES } from '../../lib/authHelpers';
+import { getMyHelperRecord } from '../../lib/marketplace';
 
 export function BecomeHelperScreen() {
   const navigate = useNavigate();
-  const { registerAsHelper, userName } = useAppStore();
+  const { registerAsHelper, userName, phone, cnicStatus, setCnicStatus } = useAppStore();
   const [step, setStep] = useState(1);
+  const [fullName, setFullName] = useState(userName || '');
   const [selectedServices, setSelectedServices] = useState<string[]>([]);
+  const [cnicFront, setCnicFront] = useState<File | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Approved users only need a new CNIC photo if they choose to upload one
+  const cnicRequired = cnicStatus !== 'approved';
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Existing helpers start with their saved services selected
+  useEffect(() => {
+    getMyHelperRecord()
+      .then(record => {
+        if (record?.Categories?.length) setSelectedServices(record.Categories);
+      })
+      .catch(() => { /* not a helper yet */ });
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitError(null);
+    if (step === 2 && selectedServices.length === 0) {
+      setSubmitError('Please choose at least one service you can offer.');
+      return;
+    }
     if (step < 3) {
       setStep(step + 1);
       return;
     }
-    
+
+    if (!cnicFront && cnicRequired) {
+      setSubmitError('Please upload a photo of your CNIC front.');
+      return;
+    }
+
     setIsSubmitting(true);
-    setTimeout(() => {
-      // Simulate backend processing, then convert to helper role.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        throw new Error('Your session has expired. Please log in again.');
+      }
+
+      // CNIC photo goes to the private bucket under the user's own folder
+      if (cnicFront) {
+        const upload = await uploadCNICDocument(cnicFront, user.id, 'front');
+        if (!upload.success) {
+          throw new Error(upload.error || 'Failed to upload your CNIC photo.');
+        }
+      }
+
+      if (cnicFront && cnicStatus !== 'approved') {
+        const { error: metaError } = await supabase.auth.updateUser({
+          data: { cnic_status: 'pending', cnic_submitted_at: new Date().toISOString() },
+        });
+        if (metaError) throw metaError;
+        setCnicStatus('pending');
+      }
+
+      // Creates the helper record (verification stays Pending until an admin approves)
+      const sync = await syncUserProfile(user.id, normalizePhoneNumber(phone || user.phone || ''), 'helper', {
+        full_name: fullName.trim(),
+        categories: selectedServices,
+      });
+      if (!sync.success) {
+        throw new Error(sync.error || 'Failed to create your helper profile.');
+      }
+
       registerAsHelper(selectedServices);
       navigate('/helper');
-    }, 1500);
+    } catch (err: any) {
+      setSubmitError(err?.message || 'Something went wrong. Please try again.');
+      setIsSubmitting(false);
+    }
   };
 
   if (isSubmitting) {
@@ -69,7 +130,7 @@ export function BecomeHelperScreen() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">Full Name (as per CNIC)</label>
-                  <Input defaultValue={userName || 'Waleed Ahmed'} required className="bg-gray-50" />
+                  <Input value={fullName} onChange={(e) => setFullName(e.target.value)} required minLength={2} className="bg-gray-50" />
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-gray-700 mb-2">CNIC Number</label>
@@ -89,7 +150,7 @@ export function BecomeHelperScreen() {
               <p className="text-gray-500 mb-6 text-sm">What kind of tasks can you help with?</p>
               
               <div className="space-y-3">
-                 {['Home & Cleaning', 'Errands & Delivery', 'Moving & Lifting', 'Repairs & Technical', 'Digital & Admin', 'Event Help'].map((skill, idx) => (
+                 {SERVICE_CATEGORIES.map(({ id: skill, name }, idx) => (
                    <label key={idx} className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-colors ${selectedServices.includes(skill) ? 'border-brand-teal bg-teal-50/50' : 'border-gray-100 hover:border-brand-teal/30'}`}>
                      <input 
                        type="checkbox" 
@@ -100,10 +161,13 @@ export function BecomeHelperScreen() {
                          else setSelectedServices(selectedServices.filter(s => s !== skill));
                        }} 
                      />
-                     <span className="font-bold text-gray-700">{skill}</span>
+                     <span className="font-bold text-gray-700">{name}</span>
                    </label>
                  ))}
               </div>
+              {submitError && (
+                <div className="mt-4 p-3 bg-red-50 text-red-700 text-sm rounded-xl">{submitError}</div>
+              )}
             </div>
           )}
 
@@ -113,13 +177,39 @@ export function BecomeHelperScreen() {
               <p className="text-gray-500 mb-6 text-sm">Upload a photo of your CNIC for safety and trust.</p>
               
               <div className="space-y-6">
-                <div className="border-2 border-dashed border-gray-300 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-50 transition-colors">
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept={CNIC_ALLOWED_TYPES.join(",")}
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0] || null;
+                    e.target.value = '';
+                    setSubmitError(null);
+                    if (!file) return;
+                    const problem = await validateCnicImage(file);
+                    if (problem) {
+                      setCnicFront(null);
+                      setSubmitError(problem);
+                      return;
+                    }
+                    setCnicFront(file);
+                  }}
+                />
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-gray-300 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-gray-50 transition-colors"
+                >
                   <div className="w-14 h-14 bg-brand-teal/10 text-brand-teal rounded-full flex items-center justify-center mb-3">
-                    <Upload className="w-6 h-6" />
+                    {cnicFront ? <CheckCircle2 className="w-6 h-6" /> : <Upload className="w-6 h-6" />}
                   </div>
-                  <p className="font-bold text-gray-700">Upload CNIC Front</p>
-                  <p className="text-xs text-gray-400 mt-1">Tap to browse or take a photo</p>
+                  <p className="font-bold text-gray-700">{cnicFront ? 'CNIC Front Selected' : 'Upload CNIC Front'}</p>
+                  <p className="text-xs text-gray-400 mt-1 break-all">{cnicFront ? cnicFront.name : 'Tap to browse or take a photo'}</p>
                 </div>
+
+                {submitError && (
+                  <div className="p-3 bg-red-50 text-red-700 text-sm rounded-xl">{submitError}</div>
+                )}
                 
                 <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex gap-3 items-start">
                   <ShieldCheck className="w-6 h-6 text-blue-500 flex-shrink-0" />

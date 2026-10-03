@@ -16,6 +16,7 @@ import { AdminJobsScreen } from './features/admin/AdminJobs';
 import { AdminDisputesScreen } from './features/admin/AdminDisputes';
 import { SuperAdminDashboard } from './features/admin/SuperAdminDashboard';
 import { AdminDashboard, AdminCNICQueue, UserManagementScreen } from './features/admin/AdminScreens';
+import { AdminSettingsScreen, AdminAuditLogScreen } from './features/admin/AdminSettings';
 
 import { useAppStore } from './store/useAppStore';
 import { trackPageView } from './utils/analytics';
@@ -23,6 +24,9 @@ import { useLocation } from 'react-router-dom';
 
 import { ServicesScreen } from './components/ServicesScreen';
 import { ToastContainer } from './components/ToastContainer';
+import { supabase } from './lib/supabaseClient';
+import { getCnicStatus } from './lib/authHelpers';
+import { Role } from './store/useAppStore';
 
 function RootRedirect() {
   const { role } = useAppStore();
@@ -61,6 +65,55 @@ export default function App() {
     document.documentElement.dir = language === 'ur' ? 'rtl' : 'ltr';
     document.documentElement.lang = language;
   }, [language]);
+
+  // Restore and maintain Supabase authentication session
+  useEffect(() => {
+    const syncSession = async (user: any, session: any) => {
+      if (!user) return;
+      try {
+        // Query Profiles table using exact Phase 1 column name 'ID'
+        const { data: profile } = await supabase
+          .from('Profiles')
+          .select('ID, Phone, Role')
+          .eq('ID', user.id)
+          .maybeSingle();
+
+        const profileRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
+        // Helpers can also book as customers: keep "user mode" if they switched to it.
+        // The mode only chooses screens; the database still enforces what each account may do.
+        const currentMode = useAppStore.getState().role;
+        const userRole: Role = profileRole === 'helper' && currentMode === 'user' ? 'user' : profileRole;
+        const fullName = user.user_metadata?.full_name || '';
+        const userPhone = profile?.Phone || user.phone || '';
+        const cnicStatus = getCnicStatus(user);
+
+        useAppStore.getState().login(userRole, fullName, userPhone, user, session);
+        useAppStore.getState().setCnicStatus(cnicStatus);
+      } catch (e) {
+        console.warn('Session profile restoration warning:', e);
+      }
+    };
+
+    // Initial session check
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        syncSession(session.user, session);
+      }
+    });
+
+    // Real-time auth listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session?.user) {
+        syncSession(session.user, session);
+      } else if (event === 'SIGNED_OUT') {
+        useAppStore.getState().logout();
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   return (
     <>
@@ -121,6 +174,8 @@ export default function App() {
           </Route>
           
           <Route path="active-job" element={<ActiveJobScreen />} />
+          {/* Existing helpers update services or re-submit CNIC after a rejection */}
+          <Route path="become-helper" element={<BecomeHelperScreen />} />
         </Route>
 
         {/* Admin/SuperAdmin Flow */}
@@ -131,15 +186,10 @@ export default function App() {
           <Route path="disputes" element={<AdminDisputesScreen />} />
           <Route path="cnic" element={<AdminCNICQueue />} />
           <Route path="users" element={<UserManagementScreen />} />
-          <Route path="login" element={
-             <div className="flex h-full items-center justify-center -m-8">
-               <div className="max-w-md w-full bg-white p-8 rounded-3xl shadow-xl">
-                 <h2 className="text-2xl font-bold mb-6 text-center">Admin Access</h2>
-                 <button onClick={() => { useAppStore.getState().login('admin', 'Admin User'); window.location.href='/admin'; }} className="w-full bg-gray-900 text-white p-3 rounded-xl mb-3">Login as Admin</button>
-                 <button onClick={() => { useAppStore.getState().login('superadmin', 'Founder'); window.location.href='/admin/super'; }} className="w-full bg-brand-orange text-white p-3 rounded-xl">Login as Founder (Super Admin)</button>
-               </div>
-             </div>
-          } />
+          <Route path="settings" element={<AdminSettingsScreen />} />
+          <Route path="logs" element={<AdminAuditLogScreen />} />
+          {/* Admins sign in with their real account; the login screen routes admin roles to /admin */}
+          <Route path="login" element={<Navigate to="/auth/login" replace />} />
         </Route>
 
         <Route path="/" element={<RootRedirect />} />

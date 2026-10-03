@@ -2,7 +2,8 @@ import React from 'react';
 import { Outlet, Navigate } from 'react-router-dom';
 import { useTranslation } from '../locales/useTranslation';
 import { useAppStore } from '../store/useAppStore';
-import { LayoutDashboard, Users, UserCheck, Briefcase, FileWarning, Settings, LogOut } from 'lucide-react';
+import { supabase } from '../lib/supabaseClient';
+import { LayoutDashboard, Users, UserCheck, Briefcase, FileWarning, Settings, LogOut, ScrollText } from 'lucide-react';
 
 export function AdminShell() {
   const { language } = useTranslation();
@@ -12,12 +13,23 @@ export function AdminShell() {
     return <Navigate to="/" replace />;
   }
 
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut({ scope: 'local' }); // this device only; other devices stay signed in
+    } catch (err) {
+      console.warn('Supabase signOut error:', err);
+    }
+    logout();
+    window.location.href = '/auth/login';
+  };
+
   const menu = [
     { name: 'Dashboard', icon: LayoutDashboard, path: '/admin' },
     { name: 'Users & Helpers', icon: Users, path: '/admin/users' },
     { name: 'CNIC Verification', icon: UserCheck, path: '/admin/cnic' },
     { name: 'Jobs', icon: Briefcase, path: '/admin/jobs' },
     { name: 'Disputes', icon: FileWarning, path: '/admin/disputes' },
+    { name: 'Audit Log', icon: ScrollText, path: '/admin/logs' },
     { name: 'Settings', icon: Settings, path: '/admin/settings' },
   ];
 
@@ -44,7 +56,7 @@ export function AdminShell() {
           ))}
         </nav>
         <div className="p-4 border-t border-gray-100">
-          <button onClick={logout} className="w-full flex items-center px-3 py-2 text-sm font-medium rounded-xl text-red-600 hover:bg-red-50 transition-colors">
+          <button onClick={handleLogout} className="w-full flex items-center px-3 py-2 text-sm font-medium rounded-xl text-red-600 hover:bg-red-50 transition-colors">
             <LogOut className="h-5 w-5 me-3" />
             Logout
           </button>

@@ -9,7 +9,10 @@ import { Input } from '../../components/ui/Input';
 import { useTranslation } from '../../locales/useTranslation';
 import { useAppStore } from '../../store/useAppStore';
 import { Wrench, Calendar, Camera, Box, Lock, Zap, Droplets, Paintbrush, Truck, MapPin, Search, Star, Clock, ArrowRight, ShieldCheck, Phone, CheckCircle2, Menu, Bell, Home, PlayCircle, ClipboardList, CheckCircle, FileText, User, ShoppingBag, Heart, Tent, Scissors, Plus, ChevronRight, BookOpen, MonitorSmartphone, UserRoundCheck, Edit2, Tag } from 'lucide-react';
-import { SERVICE_CATEGORIES, DEMO_HELPERS, DIGITAL_PAYMENT_THRESHOLD } from '../../config/businessLogic';
+import { SERVICE_CATEGORIES, DIGITAL_PAYMENT_THRESHOLD } from '../../config/businessLogic';
+import { createTask, findHelpers, createBooking, getTask, getMyBooking, updateBookingStatus, submitReview, cancelTask, onBookingsChange, getNotifications, markNotificationsRead, onNotificationsChange, timeAgo, type NotificationRecord, getPaymentForBooking, choosePaymentMethod, getDigitalPaymentThreshold, type PaymentRecord, geocodeAddress, getBrowserPosition, osmEmbedUrl, formatDistance, formatEta, categoryName, avatarUrl, formatPrice, CURRENT_TASK_KEY, CURRENT_BOOKING_KEY, type Coordinates, type HelperListing, type MyBooking, type TaskRecord } from '../../lib/marketplace';
+import { supabase } from '../../lib/supabaseClient';
+import { getCnicStatus } from '../../lib/authHelpers';
 
 const SafetyShield = () => (
   <div className="bg-brand-teal-light text-brand-teal p-3 rounded-xl flex items-start text-sm mb-6 font-medium">
@@ -32,8 +35,37 @@ export function UserHome() {
   const navigate = useNavigate();
 
   const userName = useAppStore(state => state.userName);
-  const tasks = useAppStore(state => state.tasks);
+  const userId: string | undefined = useAppStore(state => state.user?.id);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const unreadCount = notifications.filter(n => !n['Read-at']).length;
+
+  // Notifications are created by the database (booking updates, payments, messages)
+  useEffect(() => {
+    if (!userId) return;
+    const load = () => getNotifications().then(setNotifications).catch(err => console.warn('Notifications load failed:', err));
+    load();
+    return onNotificationsChange(userId, load);
+  }, [userId]);
+
+  const openNotification = (n: NotificationRecord) => {
+    setShowNotifications(false);
+    if (!n['Read-at']) markNotificationsRead([n.ID]).catch(err => console.warn('Mark read failed:', err));
+    setNotifications(list => list.map(x => (x.ID === n.ID ? { ...x, 'Read-at': new Date().toISOString() } : x)));
+    if (n.Type === 'message') navigate('/user/messages');
+    else if (n.Type === 'booking_completed' && n['Booking-id']) { localStorage.setItem(CURRENT_BOOKING_KEY, n['Booking-id']); navigate('/user/payment'); }
+    else navigate('/user/bookings');
+  };
+
+  const markAllRead = async () => {
+    try {
+      await markNotificationsRead();
+      setNotifications(list => list.map(x => ({ ...x, 'Read-at': x['Read-at'] || new Date().toISOString() })));
+    } catch (err) {
+      console.warn('Mark all read failed:', err);
+    }
+    setShowNotifications(false);
+  };
 
   return (
     <div className="pb-24 bg-white min-h-screen font-sans overflow-x-hidden">
@@ -48,12 +80,11 @@ export function UserHome() {
                  </button>
               </div>
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                 {[
-                   { title: 'Booking Confirmed', desc: 'Your plumber is confirmed for tomorrow at 10 AM.', time: '2m ago', unread: true },
-                   { title: 'Payment Successful', desc: 'Easypaisa payment of Rs. 1,500 was successful.', time: '1h ago', unread: true },
-                   { title: 'Welcome to Qareeb!', desc: 'Start finding trusted help around your neighborhood.', time: '1d ago', unread: false }
-                 ].map((notif, i) => (
-                   <div key={i} onClick={() => { setShowNotifications(false); navigate('/user/bookings'); }} className={`p-4 rounded-2xl border cursor-pointer hover:shadow-md transition-all ${notif.unread ? 'bg-orange-50/50 border-brand-orange/20' : 'bg-white border-gray-100'}`}>
+                 {notifications.length === 0 && (
+                   <p className="text-sm text-gray-500 text-center py-8">No notifications yet. Updates about your bookings will appear here.</p>
+                 )}
+                 {notifications.map((n) => ({ key: n.ID, title: n.Title, desc: n.Body || '', time: timeAgo(n['Created-at']), unread: !n['Read-at'], source: n })).map((notif) => (
+                   <div key={notif.key} onClick={() => openNotification(notif.source)} className={`p-4 rounded-2xl border cursor-pointer hover:shadow-md transition-all ${notif.unread ? 'bg-orange-50/50 border-brand-orange/20' : 'bg-white border-gray-100'}`}>
                      <div className="flex justify-between items-start mb-1">
                         <h4 className={`font-bold ${notif.unread ? 'text-gray-900' : 'text-gray-700'}`}>{notif.title}</h4>
                         {notif.unread && <span className="w-2 h-2 rounded-full bg-brand-orange mt-1.5 shrink-0"></span>}
@@ -64,7 +95,7 @@ export function UserHome() {
                  ))}
               </div>
               <div className="p-4 border-t border-gray-100 bg-white">
-                 <Button variant="outline" className="w-full text-brand-orange border-brand-orange/20 hover:bg-brand-orange/5" onClick={() => setShowNotifications(false)}>Mark all as read</Button>
+                 <Button variant="outline" className="w-full text-brand-orange border-brand-orange/20 hover:bg-brand-orange/5" onClick={markAllRead} disabled={unreadCount === 0}>Mark all as read</Button>
               </div>
            </div>
         </div>
@@ -79,12 +110,12 @@ export function UserHome() {
              </div>
              <div>
                <p className="text-gray-500 text-sm font-medium">Welcome back,</p>
-               <h1 className="text-xl md:text-2xl font-bold">{userName || 'Demo User'}</h1>
+               <h1 className="text-xl md:text-2xl font-bold">{userName || 'there'}</h1>
              </div>
            </div>
            <button onClick={() => setShowNotifications(true)} className="p-3 bg-gray-100 hover:bg-gray-200 rounded-full transition-colors relative text-gray-700">
              <Bell className="w-6 h-6" />
-             <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-brand-orange rounded-full border-2 border-white"></span>
+             {unreadCount > 0 && <span className="absolute top-2 right-2 w-2.5 h-2.5 bg-brand-orange rounded-full border-2 border-white"></span>}
            </button>
         </div>
 
@@ -215,9 +246,28 @@ export function PostTaskScreen() {
   const [femaleOnly, setFemaleOnly] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   
-  const [location, setLocation] = useState('123 Main Street, Islamabad');
+  const [location, setLocation] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isEditingLocation, setIsEditingLocation] = useState(false);
   const [tempLocation, setTempLocation] = useState('');
+  const [taskCoords, setTaskCoords] = useState<Coordinates | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
+  // Device position is more precise than looking up the typed address, so it wins when provided
+  const [deviceCoords, setDeviceCoords] = useState<Coordinates | null>(null);
+  const [deviceLocationNote, setDeviceLocationNote] = useState<string | null>(null);
+
+  const useCurrentLocation = async () => {
+    setIsLocating(true);
+    setDeviceLocationNote(null);
+    const coords = await getBrowserPosition();
+    setIsLocating(false);
+    if (coords) {
+      setDeviceCoords(coords);
+      setDeviceLocationNote('Using your current location for the map and helper distance.');
+    } else {
+      setDeviceLocationNote('Location access is unavailable. The typed address will be used instead.');
+    }
+  };
 
   const selectedService = SERVICE_CATEGORIES.find(s => s.id === category);
 
@@ -230,7 +280,7 @@ export function PostTaskScreen() {
     }
   }, [selectedService, budgetStr]);
 
-  const nextStep = () => {
+  const nextStep = async () => {
     const newErrors: Record<string, string> = {};
     if (step === 1 && !category) {
       newErrors.category = 'Please select a category first.';
@@ -240,6 +290,11 @@ export function PostTaskScreen() {
     if (step === 2) {
       if (!title.trim()) newErrors.title = 'Title is required.';
       if (!description.trim()) newErrors.description = 'Description is required.';
+    }
+    if (step === 3 && !location.trim()) {
+      newErrors.location = 'Please add the address where you need help.';
+      setTempLocation(location);
+      setIsEditingLocation(true);
     }
     if (step === 4) {
       const budgetVal = parseInt(budgetStr) || 0;
@@ -256,9 +311,26 @@ export function PostTaskScreen() {
     setErrors({});
     
     if (step === 4) {
-      localStorage.setItem('qareeb_demo_amount', budgetStr);
-      localStorage.setItem('qareeb_female_only', femaleOnly ? 'true' : 'false');
-      navigate('/user/select-helper');
+      setIsSubmitting(true);
+      try {
+        const task = await createTask({
+          title,
+          description,
+          price: parseInt(budgetStr) || 0,
+          category,
+          location,
+          femaleOnly: Boolean(selectedService?.femaleHelpersAvailable && femaleOnly),
+          latitude: taskCoords?.latitude ?? null,
+          longitude: taskCoords?.longitude ?? null,
+        });
+        localStorage.setItem(CURRENT_TASK_KEY, task.ID);
+        localStorage.removeItem(CURRENT_BOOKING_KEY);
+        navigate('/user/select-helper');
+      } catch (err: any) {
+        setErrors({ submit: err?.message || 'Could not save your task. Please try again.' });
+      } finally {
+        setIsSubmitting(false);
+      }
     } else {
       setStep(s => s + 1);
     }
@@ -357,6 +429,9 @@ export function PostTaskScreen() {
                     <div className="flex items-start gap-3">
                       <MapPin className="w-6 h-6 text-brand-orange shrink-0 mt-0.5" />
                       <p className="text-lg font-bold text-gray-900">{location}</p>
+                      {location && !taskCoords && (
+                        <p className="text-xs text-gray-500 mt-1">We could not place this address on the map, so helper distance will not be shown.</p>
+                      )}
                     </div>
                   </div>
                   <button 
@@ -372,7 +447,7 @@ export function PostTaskScreen() {
                 </div>
                 <div className="w-full h-48 bg-gray-100 rounded-2xl overflow-hidden border border-gray-200 relative">
                   <iframe 
-                    src={location.toLowerCase().includes('karachi') ? "https://www.openstreetmap.org/export/embed.html?bbox=67.0%2C24.8%2C67.1%2C24.9&layer=mapnik&marker=24.86%2C67.0" : location.toLowerCase().includes('lahore') ? "https://www.openstreetmap.org/export/embed.html?bbox=74.3%2C31.5%2C74.4%2C31.6&layer=mapnik&marker=31.52%2C74.35" : "https://www.openstreetmap.org/export/embed.html?bbox=73.02%2C33.65%2C73.1%2C33.72&layer=mapnik&marker=33.6844%2C73.0479"} 
+                    src={taskCoords ? osmEmbedUrl(taskCoords) : location.toLowerCase().includes('karachi') ? "https://www.openstreetmap.org/export/embed.html?bbox=67.0%2C24.8%2C67.1%2C24.9&layer=mapnik&marker=24.86%2C67.0" : location.toLowerCase().includes('lahore') ? "https://www.openstreetmap.org/export/embed.html?bbox=74.3%2C31.5%2C74.4%2C31.6&layer=mapnik&marker=31.52%2C74.35" : "https://www.openstreetmap.org/export/embed.html?bbox=73.02%2C33.65%2C73.1%2C33.72&layer=mapnik&marker=33.6844%2C73.0479"} 
                     className="w-full h-full border-0 transition-all duration-500"
                     title="Service Location Map"
                   />
@@ -390,6 +465,16 @@ export function PostTaskScreen() {
                   onChange={(e) => setTempLocation(e.target.value)}
                   icon={<Search className="w-5 h-5 text-gray-400" />}
                 />
+                {errors.location && <p className="text-red-500 text-sm mt-2">{errors.location}</p>}
+                <button
+                  type="button"
+                  onClick={useCurrentLocation}
+                  disabled={isLocating}
+                  className="mt-3 text-sm font-semibold text-brand-teal hover:underline disabled:opacity-50 flex items-center gap-1"
+                >
+                  <MapPin className="w-4 h-4" /> Use my current location
+                </button>
+                {deviceLocationNote && <p className="text-xs text-gray-500 mt-1">{deviceLocationNote}</p>}
                 <div className="w-full h-48 bg-gray-100 rounded-2xl overflow-hidden border border-gray-200 mt-4 relative">
                   <iframe 
                     src="https://www.openstreetmap.org/export/embed.html?bbox=73.02%2C33.65%2C73.1%2C33.72&layer=mapnik&marker=33.6844%2C73.0479" 
@@ -397,8 +482,7 @@ export function PostTaskScreen() {
                     title="Map Preview"
                   />
                   <div className="absolute inset-0 bg-transparent cursor-crosshair" onClick={() => {
-                     /* Simulated map click */
-                     setTempLocation('Selected on Map, Islamabad');
+                     /* Map picking is not available yet; the typed address is used */
                   }}></div>
                   <div className="absolute top-2 left-2 bg-white/90 px-3 py-1.5 rounded-lg text-xs font-bold text-gray-700 shadow-sm z-10 flex items-center gap-2">
                     <MapPin className="w-3.5 h-3.5 text-brand-orange" />
@@ -407,8 +491,14 @@ export function PostTaskScreen() {
                 </div>
                 <div className="flex gap-4 mt-6">
                   <Button variant="outline" className="flex-1" onClick={() => setIsEditingLocation(false)}>Cancel</Button>
-                  <Button className="flex-1" onClick={() => {
-                    setLocation(tempLocation);
+                  <Button className="flex-1" isLoading={isLocating} disabled={isLocating} onClick={async () => {
+                    const address = tempLocation.trim();
+                    setLocation(address);
+                    setTaskCoords(null);
+                    setIsLocating(true);
+                    const coords = deviceCoords ?? (address ? await geocodeAddress(address) : null);
+                    setTaskCoords(coords);
+                    setIsLocating(false);
                     setIsEditingLocation(false);
                   }}>Confirm Location</Button>
                 </div>
@@ -462,10 +552,12 @@ export function PostTaskScreen() {
       
       <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-gray-100 z-40">
         <div className="max-w-2xl mx-auto">
+          {errors.submit && <p className="text-red-500 text-sm mb-2 text-center">{errors.submit}</p>}
           <Button 
             className="w-full shadow-lg h-[54px] text-lg rounded-2xl" 
             onClick={nextStep}
-            disabled={isEditingLocation}
+            disabled={isEditingLocation || isSubmitting}
+            isLoading={isSubmitting}
           >
             {step === 4 ? 'Continue to Match' : 'Next Step'}
           </Button>
@@ -477,27 +569,101 @@ export function PostTaskScreen() {
 
 
 
+/** Maps a real helper listing onto the fields the helper cards render. No invented data. */
+function toHelperCard(h: HelperListing) {
+  const services = (h.categories || []).map(categoryName).filter(Boolean);
+  const rating = Number(h.rating) || 0;
+  return {
+    id: h.helper_id,
+    name: h.full_name || 'Qareeb Helper',
+    photo: avatarUrl(h.full_name),
+    verified: true,
+    rating: rating > 0 ? rating.toFixed(1) : 'New',
+    reviews: Number(h.review_count) || 0,
+    completedTasks: Number(h.completed_jobs) || 0,
+    experience: null as string | null,
+    // Approximate: the database rounds listing distances up to whole kilometres for helper privacy
+    eta: formatEta(h.distance_km) && `~${formatEta(h.distance_km)}`,
+    distance: h.distance_km != null ? `~${Number(h.distance_km)} km` : null,
+    skills: services.join(' • '),
+    bio: services.length ? `Verified Qareeb helper offering ${services.join(', ')}.` : 'Verified Qareeb helper.',
+  };
+}
+
 export function SelectHelperScreen() {
   const navigate = useNavigate();
   const [selectedHelper, setSelectedHelper] = useState<any>(null);
   const [showProfile, setShowProfile] = useState(false);
   const [showCNIC, setShowCNIC] = useState(false);
-  const [cnicVerified, setCnicVerified] = useState(false);
-  
-  const category = localStorage.getItem('qareeb_selected_category') || '';
-  const isFemaleOnly = localStorage.getItem('qareeb_female_only') === 'true';
-  let helpers = DEMO_HELPERS.filter(h => 
-    (!category || h.categories?.includes(category)) && 
-    (!isFemaleOnly || h.female)
-  );
+  const cnicStatus = useAppStore(state => state.cnicStatus);
+  const isVerified = cnicStatus === 'approved';
+  const setCnicStatus = useAppStore(state => state.setCnicStatus);
+  const addToast = useAppStore(state => state.addToast);
+  const [helpers, setHelpers] = useState<any[]>([]);
+  const [isLoadingHelpers, setIsLoadingHelpers] = useState(true);
+  const [isBooking, setIsBooking] = useState(false);
+  const [isCancellingTask, setIsCancellingTask] = useState(false);
+  const taskId = localStorage.getItem(CURRENT_TASK_KEY);
 
-  const handleConfirmBooking = () => {
-    if (!cnicVerified) {
-      setShowCNIC(true);
+  // Without this the unmatched task would stay Open with no way to close it
+  const handleCancelTask = async () => {
+    if (!taskId) return;
+    setIsCancellingTask(true);
+    try {
+      await cancelTask(taskId);
+      localStorage.removeItem(CURRENT_TASK_KEY);
+      addToast('Request cancelled.', 'info');
+      navigate('/user', { replace: true });
+    } catch (err: any) {
+      addToast(err?.message || 'Could not cancel the request.', 'error');
+    } finally {
+      setIsCancellingTask(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!taskId) {
+      navigate('/user/post', { replace: true });
       return;
     }
-    localStorage.setItem('qareeb_selected_helper', JSON.stringify(selectedHelper));
-    navigate('/user/tracking');
+    (async () => {
+      try {
+        const task = await getTask(taskId);
+        if (!task || task.Status !== 'Open') {
+          addToast('This task is no longer open. Please post a new task.', 'info');
+          navigate('/user/post', { replace: true });
+          return;
+        }
+        const listings = await findHelpers(task.Category, task['Female-only'], task.Latitude, task.Longitude);
+        setHelpers(listings.map(toHelperCard));
+      } catch (err: any) {
+        addToast(err?.message || 'Could not load helpers.', 'error');
+      } finally {
+        setIsLoadingHelpers(false);
+      }
+    })();
+  }, [taskId]);
+
+  const handleConfirmBooking = async () => {
+    if (!selectedHelper || !taskId || isBooking) return;
+    setIsBooking(true);
+    try {
+      // Refresh so an admin's recent CNIC approval is included in the session token
+      const { data: refreshed } = await supabase.auth.refreshSession();
+      const status = getCnicStatus(refreshed.user);
+      setCnicStatus(status);
+      if (status !== 'approved') {
+        setShowCNIC(true);
+        return;
+      }
+      const bookingId = await createBooking(taskId, selectedHelper.id);
+      localStorage.setItem(CURRENT_BOOKING_KEY, bookingId);
+      navigate('/user/tracking');
+    } catch (err: any) {
+      addToast(err?.message || 'Could not create the booking.', 'error');
+    } finally {
+      setIsBooking(false);
+    }
   };
 
   if (showCNIC) {
@@ -511,22 +677,37 @@ export function SelectHelperScreen() {
         </div>
         
         <div className="flex-1 p-6 max-w-md mx-auto w-full flex flex-col pt-12">
-          {!cnicVerified ? (
+          {cnicStatus === 'pending' ? (
+            <div className="text-center animate-in zoom-in duration-500">
+              <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Clock className="w-10 h-10 text-brand-orange" />
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Verification Under Review</h2>
+              <p className="text-gray-500 font-medium mb-8">
+                Your CNIC documents have been submitted and are under review by our team. You can confirm your booking as soon as verification is approved.
+              </p>
+              <Button variant="outline" className="w-full" onClick={() => setShowCNIC(false)}>
+                Back to Helpers
+              </Button>
+            </div>
+          ) : !isVerified ? (
             <>
               <div className="text-center mb-8">
                 <div className="w-20 h-20 bg-brand-teal/10 rounded-full flex items-center justify-center mx-auto mb-4">
                   <ShieldCheck className="w-10 h-10 text-brand-teal" />
                 </div>
                 <h2 className="text-2xl font-bold text-gray-900 mb-2">Verify your Identity</h2>
-                <p className="text-gray-500 font-medium">Please verify your identity before confirming your booking to ensure safety for everyone.</p>
+                <p className="text-gray-500 font-medium">
+                  Please verify your CNIC before confirming your booking to ensure safety and trust for both customers and helpers.
+                </p>
               </div>
 
               <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm mb-8 text-center">
-                <p className="text-sm font-bold text-gray-600 mb-4">Demo Verification Mode</p>
-                <Button className="w-full mb-3" onClick={() => {
-                  setCnicVerified(true);
-                }}>
-                  Simulate Verification Success
+                <p className="text-sm text-gray-600 mb-6 font-medium">
+                  Upload your original Pakistani CNIC (Front, Back, and a quick Selfie) for fast approval.
+                </p>
+                <Button className="w-full h-12 text-base font-bold shadow-md shadow-brand-orange/20" onClick={() => navigate('/auth/cnic-verification')}>
+                  Complete CNIC Verification
                 </Button>
               </div>
             </>
@@ -539,6 +720,7 @@ export function SelectHelperScreen() {
                <p className="text-gray-500 font-medium mb-10">Your CNIC has been verified successfully.</p>
                <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={() => {
                  setShowCNIC(false);
+                 handleConfirmBooking();
                }}>
                  Continue to Booking
                </Button>
@@ -587,11 +769,12 @@ export function SelectHelperScreen() {
                  <p className="text-xs text-gray-500 font-medium">Tasks Done</p>
                </div>
                <div className="text-center">
-                 <div className="text-gray-900 font-bold text-xl mb-1">{selectedHelper.experience}</div>
+                 <div className="text-gray-900 font-bold text-xl mb-1">{selectedHelper.experience || '—'}</div>
                  <p className="text-xs text-gray-500 font-medium">Experience</p>
                </div>
             </div>
 
+            {selectedHelper.eta && (
             <div className="bg-blue-50/50 border border-blue-100 rounded-2xl p-4 flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
@@ -606,6 +789,7 @@ export function SelectHelperScreen() {
                 <span className="text-xs font-bold bg-blue-100 text-blue-700 px-2 py-1 rounded-md">{selectedHelper.distance} away</span>
               </div>
             </div>
+            )}
 
             <div className="space-y-6">
               <div>
@@ -628,7 +812,7 @@ export function SelectHelperScreen() {
         <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-gray-100 z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
           <div className="max-w-2xl mx-auto flex items-center gap-4">
             <Button variant="outline" className="flex-1 h-[54px] rounded-2xl border-2" onClick={() => setShowProfile(false)}>Back</Button>
-            <Button className="flex-[2] h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking}>
+            <Button className="flex-[2] h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking} isLoading={isBooking} disabled={isBooking}>
               Confirm Booking
             </Button>
           </div>
@@ -645,7 +829,7 @@ export function SelectHelperScreen() {
         </button>
         <div>
           <h1 className="text-xl font-bold text-gray-900">Choose Your Helper</h1>
-          <p className="text-xs text-gray-500 font-medium">{helpers.length} helpers available nearby</p>
+          <p className="text-xs text-gray-500 font-medium">{isLoadingHelpers ? 'Finding helpers…' : `${helpers.length} helpers available`}</p>
         </div>
       </div>
 
@@ -653,14 +837,17 @@ export function SelectHelperScreen() {
         <SafetyShield />
         
         <div className="space-y-4">
-          {helpers.length === 0 && (
+          {!isLoadingHelpers && helpers.length === 0 && (
             <div className="text-center py-12 px-4 bg-white rounded-3xl border border-gray-100">
               <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <Search className="w-8 h-8 text-gray-400" />
               </div>
               <h3 className="text-lg font-bold text-gray-900 mb-2">No helpers available</h3>
               <p className="text-sm text-gray-500 font-medium mb-6">We couldn't find any helpers for this specific service right now.</p>
-              <Button variant="outline" onClick={() => navigate(-1)}>Go Back</Button>
+              <div className="flex gap-3 justify-center">
+                <Button variant="outline" onClick={() => navigate(-1)}>Go Back</Button>
+                <Button variant="outline" className="border-red-200 text-red-500 hover:bg-red-50" isLoading={isCancellingTask} disabled={isCancellingTask} onClick={handleCancelTask}>Cancel Request</Button>
+              </div>
             </div>
           )}
           {helpers.map(helper => (
@@ -688,10 +875,10 @@ export function SelectHelperScreen() {
                       <span className="font-bold text-sm text-brand-orange">{helper.rating}</span>
                     </div>
                   </div>
-                  <p className="text-xs text-gray-500 font-medium mt-1">{helper.completedTasks} tasks • {helper.experience} exp</p>
+                  <p className="text-xs text-gray-500 font-medium mt-1">{helper.completedTasks} tasks{helper.experience ? ` • ${helper.experience} exp` : ''}</p>
                   <div className="flex items-center gap-2 mt-3">
-                    <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><Clock className="w-3 h-3"/> {helper.eta}</span>
-                    <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><MapPin className="w-3 h-3"/> {helper.distance}</span>
+                    {helper.eta && <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><Clock className="w-3 h-3"/> {helper.eta}</span>}
+                    {helper.distance && <span className="text-[11px] font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md flex items-center gap-1"><MapPin className="w-3 h-3"/> {helper.distance}</span>}
                   </div>
                 </div>
               </div>
@@ -711,7 +898,7 @@ export function SelectHelperScreen() {
       {selectedHelper && !showProfile && (
         <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-gray-100 z-40 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] animate-in slide-in-from-bottom-12">
           <div className="max-w-2xl mx-auto">
-            <Button className="w-full h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking}>
+            <Button className="w-full h-[54px] rounded-2xl text-lg shadow-lg bg-brand-orange hover:bg-orange-500 border-none" onClick={handleConfirmBooking} isLoading={isBooking} disabled={isBooking}>
               Confirm & Continue
             </Button>
           </div>
@@ -725,31 +912,91 @@ export function SelectHelperScreen() {
 
 export function TrackingScreen() {
   const navigate = useNavigate();
-  const [status, setStatus] = useState<'on_way' | 'arrived' | 'in_progress' | 'completed'>('on_way');
-  const storedHelper = localStorage.getItem('qareeb_selected_helper');
-  const selectedHelper = storedHelper ? JSON.parse(storedHelper) : DEMO_HELPERS[0];
+  const addToast = useAppStore(state => state.addToast);
+  const bookingId = localStorage.getItem(CURRENT_BOOKING_KEY);
+  const [booking, setBooking] = useState<MyBooking | null>(null);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+
+  // Realtime pushes the helper's status updates; polling is a fallback and refreshes distance/ETA
+  useEffect(() => {
+    if (!bookingId) {
+      navigate('/user', { replace: true });
+      return;
+    }
+    let active = true;
+    const load = async () => {
+      try {
+        const latest = await getMyBooking(bookingId);
+        if (!active) return;
+        if (!latest) {
+          addToast('Booking not found.', 'error');
+          navigate('/user', { replace: true });
+          return;
+        }
+        setBooking(latest);
+      } catch (err) {
+        console.warn('Booking refresh failed:', err);
+      }
+    };
+    load();
+    const unsubscribe = onBookingsChange(`ID=eq.${bookingId}`, load);
+    const timer = setInterval(load, 15000);
+    return () => { active = false; clearInterval(timer); unsubscribe(); };
+  }, [bookingId]);
+
+  const dbStatus = booking?.status;
+  // The screen's four visual states; waiting/accepted are shown on the "on the way" view
+  const status: 'on_way' | 'arrived' | 'in_progress' | 'completed' =
+    dbStatus === 'Arrived' ? 'arrived'
+    : dbStatus === 'In-progress' ? 'in_progress'
+    : dbStatus === 'Completed' ? 'completed'
+    : 'on_way';
+  const isClosed = dbStatus === 'Rejected' || dbStatus === 'Cancelled';
+  const taskPoint = booking?.task_latitude != null && booking?.task_longitude != null
+    ? { latitude: booking.task_latitude, longitude: booking.task_longitude }
+    : null;
+  // Approximate, from the helper's last shared position (null when unknown or older than 24h)
+  const eta = formatEta(booking?.helper_distance_km);
+  const distance = formatDistance(booking?.helper_distance_km);
+  const canCancel = dbStatus === 'Pending' || dbStatus === 'Accepted';
+
+  const selectedHelper = {
+    name: booking?.counterpart_name || 'Your helper',
+    photo: avatarUrl(booking?.counterpart_name),
+  };
 
   useEffect(() => {
-    let timer1: any, timer2: any, timer3: any;
-    if (status === 'on_way') {
-      timer1 = setTimeout(() => setStatus('arrived'), 4000);
-    } else if (status === 'arrived') {
-      timer2 = setTimeout(() => setStatus('in_progress'), 3000);
-    } else if (status === 'in_progress') {
-      timer3 = setTimeout(() => setStatus('completed'), 5000);
-    } else if (status === 'completed') {
-      setTimeout(() => navigate('/user/payment'), 1500);
+    if (dbStatus === 'Completed') {
+      const timer = setTimeout(() => navigate('/user/payment'), 1500);
+      return () => clearTimeout(timer);
     }
-    return () => { clearTimeout(timer1); clearTimeout(timer2); clearTimeout(timer3); };
-  }, [status, navigate]);
+  }, [dbStatus, navigate]);
 
-  const handleCancel = () => {
-    if (window.confirm("Are you sure you want to cancel this request?")) {
-      navigate('/user');
+  const handleCancel = async () => {
+    if (!booking) return;
+    setIsCancelling(true);
+    try {
+      await updateBookingStatus(booking.booking_id, 'Cancelled');
+      setBooking({ ...booking, status: 'Cancelled' });
+      // "Cancel Request" closes the whole request, so the task does not stay open
+      await cancelTask(booking.task_id).catch(err => console.warn('Task cancel failed:', err));
+      addToast('Booking cancelled.', 'info');
+    } catch (err: any) {
+      addToast(err?.message || 'Could not cancel the booking.', 'error');
+    } finally {
+      setIsCancelling(false);
+      setConfirmCancel(false);
     }
   };
 
   const getStatusText = () => {
+    const firstName = selectedHelper.name.split(' ')[0];
+    if (!booking) return 'Loading booking…';
+    if (dbStatus === 'Pending') return `Waiting for ${firstName} to accept`;
+    if (dbStatus === 'Accepted') return `${firstName} accepted your request`;
+    if (dbStatus === 'Rejected') return `${firstName} declined this request`;
+    if (dbStatus === 'Cancelled') return 'Booking cancelled';
     switch (status) {
       case 'on_way': return `${selectedHelper.name.split(' ')[0]} is on the way`;
       case 'arrived': return `${selectedHelper.name.split(' ')[0]} has arrived`;
@@ -769,13 +1016,13 @@ export function TrackingScreen() {
       <div className="flex-1 relative w-full h-full bg-gray-200 overflow-hidden pointer-events-none">
         {status === 'on_way' ? (
           <iframe 
-            src="https://www.openstreetmap.org/export/embed.html?bbox=73.01%2C33.64%2C73.11%2C33.73&layer=mapnik&marker=33.6844%2C73.0479" 
+            src={taskPoint ? osmEmbedUrl(taskPoint, 0.05) : "https://www.openstreetmap.org/export/embed.html?bbox=73.01%2C33.64%2C73.11%2C33.73&layer=mapnik&marker=33.6844%2C73.0479"}
             className="w-full h-full border-0 absolute inset-0 transform scale-110 transition-all duration-1000"
             title="Tracking Map"
           />
         ) : (
           <iframe 
-            src="https://www.openstreetmap.org/export/embed.html?bbox=73.04%2C33.67%2C73.06%2C33.69&layer=mapnik&marker=33.6844%2C73.0479" 
+            src={taskPoint ? osmEmbedUrl(taskPoint, 0.01) : "https://www.openstreetmap.org/export/embed.html?bbox=73.04%2C33.67%2C73.06%2C33.69&layer=mapnik&marker=33.6844%2C73.0479"}
             className="w-full h-full border-0 absolute inset-0 transform scale-125 transition-all duration-1000"
             title="Tracking Map"
           />
@@ -808,7 +1055,7 @@ export function TrackingScreen() {
            </div>
            <div className="flex-1">
              <h2 className="text-xl font-bold text-gray-900">{getStatusText()}</h2>
-             {status === 'on_way' && <p className="text-brand-orange font-bold text-sm mt-1">Estimated arrival: 8 min</p>}
+             {(dbStatus === 'Accepted' || dbStatus === 'On-the-way') && eta && <p className="text-brand-orange font-bold text-sm mt-1">Estimated arrival: ~{eta} ({distance} away)</p>}
              {status === 'arrived' && <p className="text-brand-teal font-bold text-sm mt-1">Ready to start.</p>}
              {status === 'in_progress' && <p className="text-brand-orange font-bold text-sm mt-1">Working securely.</p>}
            </div>
@@ -834,10 +1081,44 @@ export function TrackingScreen() {
           </div>
         </div>
 
-        {status === 'on_way' && (
+        {canCancel && !confirmCancel && (
           <div className="mt-8 flex gap-4">
-            <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" onClick={handleCancel}>Cancel Request</Button>
-            <Button variant="outline" className="flex-1">Edit Request</Button>
+            <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" onClick={() => setConfirmCancel(true)}>Cancel Request</Button>
+          </div>
+        )}
+
+        {canCancel && confirmCancel && (
+          <div className="mt-8">
+            <p className="text-sm text-gray-600 font-medium mb-3 text-center">Are you sure you want to cancel this request?</p>
+            <div className="flex gap-4">
+              <Button variant="outline" className="flex-1" disabled={isCancelling} onClick={() => setConfirmCancel(false)}>Keep Booking</Button>
+              <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" isLoading={isCancelling} disabled={isCancelling} onClick={handleCancel}>Yes, Cancel</Button>
+            </div>
+          </div>
+        )}
+
+        {isClosed && (
+          <div className="mt-8 flex gap-4">
+            {dbStatus === 'Rejected' && (
+              <Button className="flex-1" onClick={() => { localStorage.removeItem(CURRENT_BOOKING_KEY); navigate('/user/select-helper'); }}>Choose Another Helper</Button>
+            )}
+            {dbStatus === 'Rejected' ? (
+              <Button variant="outline" className="flex-1 border-red-200 text-red-500 hover:bg-red-50" isLoading={isCancelling} disabled={isCancelling} onClick={async () => {
+                if (!booking) return;
+                setIsCancelling(true);
+                try {
+                  await cancelTask(booking.task_id);
+                  localStorage.removeItem(CURRENT_BOOKING_KEY);
+                  navigate('/user');
+                } catch (err: any) {
+                  addToast(err?.message || 'Could not cancel the request.', 'error');
+                } finally {
+                  setIsCancelling(false);
+                }
+              }}>Cancel Request</Button>
+            ) : (
+              <Button variant="outline" className="flex-1" onClick={() => { localStorage.removeItem(CURRENT_BOOKING_KEY); navigate('/user'); }}>Back to Home</Button>
+            )}
           </div>
         )}
       </div>
@@ -850,137 +1131,130 @@ export function TrackingScreen() {
 export function PaymentRatingScreen() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
-  const storedHelper = localStorage.getItem('qareeb_selected_helper');
-  const selectedHelper = storedHelper ? JSON.parse(storedHelper) : DEMO_HELPERS[0];
-  const [paymentMethod, setPaymentMethod] = useState('');
-  const [promoCode, setPromoCode] = useState('');
-  const [discount, setDiscount] = useState(0);
-  const [promoApplied, setPromoApplied] = useState(false);
-  const amountStr = localStorage.getItem('qareeb_demo_amount') || '0';
-  const amount = parseInt(amountStr, 10);
-  const isCashDisabled = amount > 1500;
-  
-  // Auto-select easypaisa if cash is disabled and nothing is selected
+  // Helper, amount and payment come from the booking that was just completed
+  const [completedBooking, setCompletedBooking] = useState<MyBooking | null>(null);
+  const [payment, setPayment] = useState<PaymentRecord | null>(null);
+  const [cashLimit, setCashLimit] = useState(DIGITAL_PAYMENT_THRESHOLD);
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
   useEffect(() => {
-    if (isCashDisabled && (!paymentMethod || paymentMethod === 'cash')) {
-      setPaymentMethod('easypaisa');
-    }
-  }, [isCashDisabled, paymentMethod]);
+    const id = localStorage.getItem(CURRENT_BOOKING_KEY);
+    if (!id) return;
+    getMyBooking(id).then(setCompletedBooking).catch(err => console.warn('Booking load failed:', err));
+    getPaymentForBooking(id).then(setPayment).catch(err => console.warn('Payment load failed:', err));
+    getDigitalPaymentThreshold(DIGITAL_PAYMENT_THRESHOLD).then(setCashLimit).catch(err => console.warn('Settings load failed:', err));
+  }, []);
+  const selectedHelper = {
+    name: completedBooking?.counterpart_name || 'Helper',
+    photo: avatarUrl(completedBooking?.counterpart_name),
+  };
+  const amount = Number(payment?.Amount ?? completedBooking?.price) || 0;
+  const cashAllowed = amount <= cashLimit;
+  const isArranged = payment?.Status === 'Awaiting-confirmation' || payment?.Status === 'Paid';
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState('');
-  
 
-  const handleApplyPromo = () => {
-    if (!promoCode) return;
-    if (promoCode.toUpperCase() === 'QAREEB10') {
-      setDiscount(amount * 0.1);
-      setPromoApplied(true);
-    } else {
-      alert('Invalid promo code');
+  // Online payments are not integrated yet, so cash is the only method that can be recorded
+  const handleCashPayment = async () => {
+    if (!completedBooking) return;
+    setIsSavingPayment(true);
+    setPaymentError(null);
+    try {
+      const status = await choosePaymentMethod(completedBooking.booking_id, 'Cash');
+      setPayment(current => (current ? { ...current, Method: 'Cash', Status: status } : current));
+      setStep(3);
+    } catch (err: any) {
+      setPaymentError(err?.message || 'Could not save the payment method.');
+    } finally {
+      setIsSavingPayment(false);
     }
   };
 
-  const requiresDigital = amount > DIGITAL_PAYMENT_THRESHOLD;
+  const [isSavingReview, setIsSavingReview] = useState(false);
+  const addToast = useAppStore(state => state.addToast);
 
-  const handlePayment = () => {
-    if (!paymentMethod) return;
-    setStep(2);
-    setTimeout(() => {
-      setStep(3);
-    }, 2000);
-  };
-
-  const handleRatingSubmit = () => {
-    if (rating === 0) return;
-    setStep(4);
+  const handleRatingSubmit = async () => {
+    if (rating === 0 || !completedBooking) return;
+    setIsSavingReview(true);
+    try {
+      await submitReview(completedBooking.booking_id, rating, feedback);
+      setStep(4);
+    } catch (err: any) {
+      addToast(err?.message || 'Could not save your review.', 'error');
+    } finally {
+      setIsSavingReview(false);
+    }
   };
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50 pb-12">
       <div className="bg-white px-4 py-4 flex items-center shadow-sm sticky top-0 z-40 mb-6">
         <h1 className="text-xl font-bold text-gray-900 mx-auto">
-          {step === 1 ? 'Payment' : step === 3 ? 'Rate Helper' : step === 4 ? 'Thank You' : 'Processing'}
+          {step === 1 ? 'Payment' : step === 3 ? 'Rate Helper' : 'Thank You'}
         </h1>
       </div>
 
       <div className="flex-1 px-4 md:px-8 max-w-lg mx-auto w-full flex flex-col justify-center">
         {step === 1 && (
           <div className="animate-in fade-in">
-            <div className="bg-white p-6 rounded-3xl shadow-sm text-center border border-gray-100 mb-6 relative overflow-hidden">
+            <div className="bg-white p-6 rounded-3xl shadow-sm text-center border border-gray-100 mb-6">
               <p className="text-sm text-gray-500 font-medium mb-2">Total Amount</p>
-              <div className="flex items-center justify-center gap-3">
-                {promoApplied && <span className="text-2xl font-bold text-gray-400 line-through">Rs. {amount.toLocaleString()}</span>}
-                <h2 className="text-4xl font-extrabold text-gray-900">Rs. {(amount - discount).toLocaleString()}</h2>
-              </div>
-              
-              <div className="mt-6 flex gap-2">
-                <div className="relative flex-1">
-                  <Tag className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <Input 
-                    placeholder="Promo Code (e.g. QAREEB10)" 
-                    className="pl-10 bg-gray-50 border-gray-200 uppercase"
-                    value={promoCode}
-                    onChange={(e) => setPromoCode(e.target.value)}
-                    disabled={promoApplied}
-                  />
+              <h2 className="text-4xl font-extrabold text-gray-900">Rs. {amount.toLocaleString()}</h2>
+              {payment && (
+                <p className="text-xs text-gray-500 font-medium mt-2">
+                  Payment status: {payment.Status === 'Awaiting-confirmation' ? 'waiting for the helper to confirm' : payment.Status.toLowerCase()}
+                </p>
+              )}
+            </div>
+
+            {isArranged ? (
+              <>
+                <div className="bg-teal-50 border border-brand-teal/20 text-teal-800 p-4 rounded-xl mb-6 text-sm font-medium flex items-start gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-brand-teal shrink-0 mt-0.5" />
+                  {payment?.Status === 'Paid'
+                    ? `${selectedHelper.name} confirmed receiving your payment.`
+                    : `Please pay Rs. ${amount.toLocaleString()} in cash to ${selectedHelper.name}. They will confirm once they receive it.`}
                 </div>
-                <Button 
-                  variant={promoApplied ? 'secondary' : 'outline'} 
-                  onClick={promoApplied ? () => { setPromoApplied(false); setDiscount(0); setPromoCode(''); } : handleApplyPromo}
-                  className={promoApplied ? 'bg-green-100 text-green-700 border-transparent hover:bg-green-200' : ''}
-                >
-                  {promoApplied ? 'Applied' : 'Apply'}
-                </Button>
-              </div>
-            </div>
+                <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={() => setStep(3)}>Continue to Rating</Button>
+              </>
+            ) : (
+              <>
+                {!cashAllowed && (
+                  <div className="bg-orange-50 border border-brand-orange/20 text-orange-700 p-4 rounded-xl mb-6 text-sm font-medium flex items-start gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-brand-orange shrink-0 mt-0.5" />
+                    Jobs above Rs. {cashLimit.toLocaleString()} must be paid online, which is not available in the app yet. This payment stays due; you can still rate your helper.
+                  </div>
+                )}
 
-            {requiresDigital && (
-              <div className="bg-orange-50 border border-brand-orange/20 text-orange-700 p-4 rounded-xl mb-6 text-sm font-medium flex items-start gap-3">
-                <CheckCircle2 className="w-5 h-5 text-brand-orange shrink-0 mt-0.5" />
-                Digital payment is required for bookings above Rs. {DIGITAL_PAYMENT_THRESHOLD}. Cash is unavailable.
-              </div>
+                <h3 className="font-bold text-gray-900 mb-4 px-2">Choose Payment Method</h3>
+
+                <div className="space-y-3">
+                  <div className={`flex items-center p-4 rounded-2xl border-2 ${cashAllowed ? 'border-brand-teal bg-teal-50/50' : 'opacity-50 bg-gray-50 border-gray-100'}`}>
+                    <div className="flex-1 font-bold text-gray-900">Cash</div>
+                    <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">💵</div>
+                  </div>
+                  <div className="flex items-center p-4 rounded-2xl border-2 border-gray-100 bg-gray-50 opacity-60">
+                    <div className="flex-1 font-bold text-gray-900">Easypaisa <span className="ms-2 text-[10px] font-bold bg-gray-200 text-gray-600 px-2 py-0.5 rounded">Coming soon</span></div>
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Easypaisa_Digital_Bank_logo.png/500px-Easypaisa_Digital_Bank_logo.png" alt="Easypaisa" className="h-6 object-contain" />
+                  </div>
+                  <div className="flex items-center p-4 rounded-2xl border-2 border-gray-100 bg-gray-50 opacity-60">
+                    <div className="flex-1 font-bold text-gray-900">JazzCash <span className="ms-2 text-[10px] font-bold bg-gray-200 text-gray-600 px-2 py-0.5 rounded">Coming soon</span></div>
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/JazzCash_logo_%282025%29.png/500px-JazzCash_logo_%282025%29.png" alt="JazzCash" className="h-6 object-contain" />
+                  </div>
+                </div>
+
+                {paymentError && <p className="text-red-500 text-sm mt-4 text-center">{paymentError}</p>}
+                {cashAllowed ? (
+                  <Button className="w-full h-[54px] rounded-2xl text-lg mt-8" onClick={handleCashPayment} isLoading={isSavingPayment} disabled={isSavingPayment || !completedBooking || !payment}>
+                    I'll Pay Rs. {amount.toLocaleString()} in Cash
+                  </Button>
+                ) : (
+                  <Button variant="outline" className="w-full h-[54px] rounded-2xl text-lg mt-8" onClick={() => setStep(3)}>
+                    Continue to Rating
+                  </Button>
+                )}
+              </>
             )}
-
-            <h3 className="font-bold text-gray-900 mb-4 px-2">Choose Payment Method</h3>
-            
-            <div className="space-y-3">
-              <label className={`flex items-center p-4 rounded-2xl border-2 cursor-pointer transition-colors ${paymentMethod === 'easypaisa' ? 'border-brand-teal bg-teal-50/50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
-                <input type="radio" name="payment" className="hidden" checked={paymentMethod === 'easypaisa'} onChange={() => setPaymentMethod('easypaisa')} />
-                <div className="flex-1 font-bold text-gray-900">Easypaisa</div>
-                <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Easypaisa_Digital_Bank_logo.png/500px-Easypaisa_Digital_Bank_logo.png" alt="Easypaisa" className="h-6 object-contain" />
-              </label>
-
-              <label className={`flex items-center p-4 rounded-2xl border-2 cursor-pointer transition-colors ${paymentMethod === 'jazzcash' ? 'border-brand-teal bg-teal-50/50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
-                <input type="radio" name="payment" className="hidden" checked={paymentMethod === 'jazzcash'} onChange={() => setPaymentMethod('jazzcash')} />
-                <div className="flex-1 font-bold text-gray-900">JazzCash</div>
-                <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/JazzCash_logo_%282025%29.png/500px-JazzCash_logo_%282025%29.png" alt="JazzCash" className="h-6 object-contain" />
-              </label>
-
-              <label className={`flex items-center p-4 rounded-2xl border-2 transition-colors ${requiresDigital ? 'opacity-50 cursor-not-allowed bg-gray-50 border-gray-100' : paymentMethod === 'cash' ? 'border-brand-teal bg-teal-50/50 cursor-pointer' : 'border-gray-200 bg-white cursor-pointer hover:border-gray-300'}`}>
-                <input type="radio" name="payment" className="hidden" disabled={requiresDigital} checked={paymentMethod === 'cash'} onChange={() => setPaymentMethod('cash')} />
-                <div className="flex-1 font-bold text-gray-900">Cash</div>
-                <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">💵</div>
-              </label>
-            </div>
-
-            {(paymentMethod === 'easypaisa' || paymentMethod === 'jazzcash') && (
-               <div className="mt-6 p-5 border border-brand-teal/30 bg-teal-50/20 rounded-2xl animate-in slide-in-from-top-2">
-                 <h4 className="font-bold text-gray-900 mb-3 text-sm uppercase tracking-wider">{paymentMethod === 'easypaisa' ? 'Easypaisa' : 'JazzCash'} Wallet Details</h4>
-                 <Input placeholder="Mobile Number (e.g., 03001234567)" className="bg-white" />
-                 <p className="text-xs text-gray-500 mt-2">A prompt will be sent to your mobile wallet app for authorization.</p>
-               </div>
-            )}
-            <Button className="w-full h-[54px] rounded-2xl text-lg mt-8" onClick={handlePayment} disabled={!paymentMethod}>
-              {paymentMethod === 'cash' ? 'Confirm Cash Payment' : 'Pay & Confirm Booking'}
-            </Button>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="text-center animate-in zoom-in duration-300 flex flex-col items-center py-20">
-            <div className="w-16 h-16 border-4 border-gray-200 border-t-brand-teal rounded-full animate-spin mb-6"></div>
-            <h3 className="text-xl font-bold text-gray-900">Processing Payment...</h3>
-            <p className="text-gray-500 mt-2">Please wait securely.</p>
           </div>
         )}
 
@@ -991,10 +1265,6 @@ export function PaymentRatingScreen() {
                 <img src={selectedHelper.photo} className="w-full h-full object-cover" alt="Helper" />
               </div>
               <h2 className="text-2xl font-bold text-gray-900 mb-1">How was your experience?</h2>
-              <div className="bg-gray-50 inline-flex items-center gap-2 px-3 py-1.5 rounded-full mb-4 mt-2 border border-gray-100">
-                <Clock className="w-4 h-4 text-gray-400" />
-                <span className="text-sm font-bold text-gray-700">Duration: 1h 45m</span>
-              </div>
               <p className="text-gray-500 text-sm mb-6">Rate {selectedHelper.name.split(' ')[0]}'s service quality</p>
               
               <div className="flex justify-center gap-2 mb-8">
@@ -1017,7 +1287,7 @@ export function PaymentRatingScreen() {
                 onChange={(e) => setFeedback(e.target.value)}
               />
 
-              <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={handleRatingSubmit} disabled={rating === 0}>
+              <Button className="w-full h-[54px] rounded-2xl text-lg" onClick={handleRatingSubmit} disabled={rating === 0 || isSavingReview || !completedBooking} isLoading={isSavingReview}>
                 Submit Feedback
               </Button>
             </div>

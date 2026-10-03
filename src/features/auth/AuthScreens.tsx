@@ -1,11 +1,13 @@
 import { QareebLogo } from '../../components/ui/QareebLogo';
 import React, { useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { useTranslation } from '../../locales/useTranslation';
-import { useAppStore } from '../../store/useAppStore';
-import { Phone, Lock, Star, Globe, Camera, Upload, CheckCircle2, User, Gift, Eye, EyeOff, ShieldCheck, ArrowRight, ChevronDown, Instagram, Youtube } from 'lucide-react';
+import { useAppStore, Role } from '../../store/useAppStore';
+import { Phone, Lock, Star, Globe, Camera, Upload, CheckCircle2, User, Gift, Eye, EyeOff, ShieldCheck, ArrowRight, ChevronDown, Instagram, Youtube, AlertCircle } from 'lucide-react';
+import { supabase } from '../../lib/supabaseClient';
+import { normalizePhoneNumber, getFriendlyAuthErrorMessage, syncUserProfile, uploadCNICDocument, getCnicStatus, validateCnicImage, hashFile, CNIC_ALLOWED_TYPES } from '../../lib/authHelpers';
 
 const LogoHeader = () => (
   <div className="flex flex-col items-center lg:items-start justify-center py-4">
@@ -111,23 +113,127 @@ export function WelcomeScreen() {
 }
 export function LoginScreen() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { t } = useTranslation();
   const login = useAppStore(state => state.login);
+  const setCnicStatus = useAppStore(state => state.setCnicStatus);
+
+  const isSignup = window.location.pathname.includes('signup');
+  const roleQuery = searchParams.get('role');
+  const selectedRole: Role = roleQuery === 'helper' ? 'helper' : 'user';
+
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [name, setName] = useState('');
   
-  const [authStep, setAuthStep] = useState<'credentials' | 'otp' | 'referral'>('credentials');
+  const [authStep, setAuthStep] = useState<'credentials' | 'otp' | 'referral' | 'reset-request' | 'reset-verify'>('credentials');
   const [otp, setOtp] = useState('');
   const [referral, setReferral] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  // Set once the reset code is verified, so a failed password save can be retried without a new code
+  const [resetVerified, setResetVerified] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
-  const [errors, setErrors] = useState<{ phone?: string; password?: string; name?: string; otp?: string; referral?: string }>({});
-  
-  const isSignup = window.location.pathname.includes('signup');
+  const [errors, setErrors] = useState<{ phone?: string; password?: string; confirm?: string; name?: string; otp?: string; referral?: string; form?: string }>({});
 
-  const handleCredentialsSubmit = (e: React.FormEvent) => {
+  const isValidPhone = (raw: string) => {
+    const candidate = normalizePhoneNumber(raw);
+    return raw.replace(/\D/g, '').length >= 10
+      && /^\+[1-9]\d{7,14}$/.test(candidate)
+      && (!candidate.startsWith('+92') || /^\+923\d{9}$/.test(candidate));
+  };
+
+  /** Loads the signed-in user's role and opens the matching home screen. */
+  const enterApp = async (user: any, session: any, normalizedPhone: string) => {
+    const { data: profile } = await supabase
+      .from('Profiles')
+      .select('ID, Phone, Role')
+      .eq('ID', user.id)
+      .maybeSingle();
+    const userRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
+    login(userRole, user.user_metadata?.full_name || '', normalizedPhone, user, session);
+    setCnicStatus(getCnicStatus(user));
+    if (userRole === 'helper') navigate('/helper');
+    else if (userRole === 'admin' || userRole === 'superadmin') navigate('/admin');
+    else navigate('/user');
+  };
+
+  // Forgot password, step 1: send a one-time code to the account's phone (existing accounts only)
+  const handleResetRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrors({});
+    if (!isValidPhone(phone)) {
+      setErrors({ phone: 'Please enter a valid mobile number (e.g., 03001234567)' });
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        phone: normalizePhoneNumber(phone),
+        options: { shouldCreateUser: false },
+      });
+      const msg = (error?.message || '').toLowerCase();
+      // Unknown numbers continue like known ones, so the form does not reveal which numbers have accounts
+      if (error && !msg.includes('signups not allowed') && !msg.includes('user not found')) {
+        setErrors({ form: getFriendlyAuthErrorMessage(error) });
+        return;
+      }
+      setOtp('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setResetVerified(false);
+      setAuthStep('reset-verify');
+    } catch (err: any) {
+      setErrors({ form: getFriendlyAuthErrorMessage(err) });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Forgot password, step 2: verify the code (this signs the user in), then save the new password
+  const handleResetVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrors({});
+    const nextErrors: typeof errors = {};
+    if (!resetVerified && otp.trim().length < 6) nextErrors.otp = 'Please enter the 6-digit verification code.';
+    if (newPassword.length < 6) nextErrors.password = 'Password must be at least 6 characters';
+    if (confirmPassword !== newPassword) nextErrors.confirm = 'Passwords do not match';
+    if (Object.keys(nextErrors).length > 0) {
+      setErrors(nextErrors);
+      return;
+    }
+
+    setIsLoading(true);
+    const normalizedPhone = normalizePhoneNumber(phone);
+    try {
+      if (!resetVerified) {
+        const { error } = await supabase.auth.verifyOtp({ phone: normalizedPhone, token: otp.trim(), type: 'sms' });
+        if (error) {
+          setErrors({ otp: getFriendlyAuthErrorMessage(error) });
+          return;
+        }
+        setResetVerified(true);
+      }
+
+      const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error || !data?.user) {
+        setErrors({ form: getFriendlyAuthErrorMessage(error) || 'Could not save the new password. Please try again.' });
+        return;
+      }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      useAppStore.getState().addToast('Your password has been changed.', 'success');
+      await enterApp(data.user, session, normalizedPhone);
+    } catch (err: any) {
+      setErrors({ form: getFriendlyAuthErrorMessage(err) });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrors({});
     let hasError = false;
@@ -137,8 +243,15 @@ export function LoginScreen() {
       hasError = true;
     }
     
-    if (phone.length < 10) {
-      setErrors(prev => ({ ...prev, phone: 'Please enter a valid phone number' }));
+    // Must be a valid E.164 number, and Pakistani numbers a full mobile number (+92 3XX XXXXXXX),
+    // before an OTP is requested
+    const candidatePhone = normalizePhoneNumber(phone);
+    if (
+      phone.replace(/\D/g, '').length < 10 ||
+      !/^\+[1-9]\d{7,14}$/.test(candidatePhone) ||
+      (candidatePhone.startsWith('+92') && !/^\+923\d{9}$/.test(candidatePhone))
+    ) {
+      setErrors(prev => ({ ...prev, phone: 'Please enter a valid mobile number (e.g., 03001234567)' }));
       hasError = true;
     }
 
@@ -150,63 +263,199 @@ export function LoginScreen() {
     if (hasError) return;
 
     setIsLoading(true);
-    setTimeout(() => {
+    const normalizedPhone = normalizePhoneNumber(phone);
+
+    try {
+      if (isSignup) {
+        // Real Supabase Auth SignUp with phone and password
+        const { data, error } = await supabase.auth.signUp({
+          phone: normalizedPhone,
+          password,
+          options: {
+            data: {
+              role: selectedRole,
+              full_name: name.trim(),
+            },
+          },
+        });
+
+        if (error) {
+          setIsLoading(false);
+          setErrors({ form: getFriendlyAuthErrorMessage(error) });
+          return;
+        }
+
+        // If session was immediately created (e.g. phone auto-confirm)
+        if (data?.session && data?.user) {
+          await syncUserProfile(data.user.id, normalizedPhone, selectedRole, { full_name: name.trim() });
+          setIsLoading(false);
+          setAuthStep('referral');
+        } else {
+          // Move to phone OTP verification
+          setIsLoading(false);
+          setAuthStep('otp');
+        }
+      } else {
+        // Real Supabase Auth SignIn with phone and password
+        const { data, error } = await supabase.auth.signInWithPassword({
+          phone: normalizedPhone,
+          password,
+        });
+
+        if (error) {
+          setIsLoading(false);
+          setErrors({ form: getFriendlyAuthErrorMessage(error) });
+          return;
+        }
+
+        if (data?.user && data?.session) {
+          // Fetch user profile from Profiles table using exact Phase 1 column 'ID'
+          const { data: profile } = await supabase
+            .from('Profiles')
+            .select('ID, Phone, Role')
+            .eq('ID', data.user.id)
+            .maybeSingle();
+
+          const userRole = (profile?.Role || data.user.user_metadata?.role || 'user') as Role;
+          const fullName = data.user.user_metadata?.full_name || '';
+          const cnicStatus = getCnicStatus(data.user);
+
+          login(userRole, fullName, normalizedPhone, data.user, data.session);
+          setCnicStatus(cnicStatus);
+          setIsLoading(false);
+
+          if (userRole === 'helper') {
+            navigate('/helper');
+          } else if (userRole === 'admin' || userRole === 'superadmin') {
+            navigate('/admin');
+          } else {
+            navigate('/user');
+          }
+        } else {
+          setIsLoading(false);
+          setErrors({ form: 'Unable to establish an authenticated session. Please try again.' });
+        }
+      }
+    } catch (err: any) {
       setIsLoading(false);
-      setAuthStep('otp');
-    }, 800);
+      setErrors({ form: getFriendlyAuthErrorMessage(err) });
+    }
   };
 
-  const handleOtpSubmit = (e: React.FormEvent) => {
+  const handleOtpSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrors({});
     
-    if (otp !== '123456') {
-      setErrors({ otp: 'Invalid OTP. Please try again.' });
+    if (otp.trim().length < 6) {
+      setErrors({ otp: 'Please enter the 6-digit verification code.' });
       return;
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
+    const normalizedPhone = normalizePhoneNumber(phone);
+
+    try {
+      // Real Supabase Auth OTP verification
+      const { data, error } = await supabase.auth.verifyOtp({
+        phone: normalizedPhone,
+        token: otp.trim(),
+        type: 'sms',
+      });
+
+      if (error) {
+        setIsLoading(false);
+        setErrors({ otp: getFriendlyAuthErrorMessage(error) });
+        return;
+      }
+
       if (isSignup) {
+        if (data?.user) {
+          await syncUserProfile(data.user.id, normalizedPhone, selectedRole, { full_name: name.trim() });
+        }
+        setIsLoading(false);
         setAuthStep('referral');
       } else {
-        finishLogin();
+        const user = data?.user;
+        if (user) {
+          const { data: profile } = await supabase
+            .from('Profiles')
+            .select('ID, Phone, Role')
+            .eq('ID', user.id)
+            .maybeSingle();
+
+          const userRole = (profile?.Role || user.user_metadata?.role || 'user') as Role;
+          const fullName = user.user_metadata?.full_name || '';
+          const cnicStatus = getCnicStatus(user);
+
+          login(userRole, fullName, normalizedPhone, user, data.session);
+          setCnicStatus(cnicStatus);
+          setIsLoading(false);
+
+          if (userRole === 'helper') {
+            navigate('/helper');
+          } else if (userRole === 'admin' || userRole === 'superadmin') {
+            navigate('/admin');
+          } else {
+            navigate('/user');
+          }
+        } else {
+          setIsLoading(false);
+          setErrors({ otp: 'Failed to verify session. Please try again.' });
+        }
       }
-    }, 800);
+    } catch (err: any) {
+      setIsLoading(false);
+      setErrors({ otp: getFriendlyAuthErrorMessage(err) });
+    }
   };
 
-  const handleReferralSubmit = (e: React.FormEvent) => {
+  const handleReferralSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrors({});
-    
-    if (referral && referral !== 'QAREEB2026') {
-      setErrors({ referral: 'Invalid referral code.' });
-      return;
-    }
-
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      finishLogin();
-    }, 800);
+    await completeSignup(referral.trim());
   };
 
-  const finishLogin = () => {
-    let finalName = name;
-    if (!isSignup) {
-      const stored = localStorage.getItem('qareeb_user');
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          if (parsed.name && parsed.phone === phone) finalName = parsed.name;
-        } catch(e) {}
+  const completeSignup = async (referralCode?: string) => {
+    setIsLoading(true);
+    const normalizedPhone = normalizePhoneNumber(phone);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const currentUser = session?.user;
+
+      // Never enter the app without a real Supabase session
+      if (!currentUser) {
+        setIsLoading(false);
+        setErrors({ referral: 'Your session could not be verified. Please log in again.' });
+        return;
       }
+
+      if (referralCode) {
+        await supabase.auth.updateUser({
+          data: { referral_code: referralCode },
+        });
+      }
+      const sync = await syncUserProfile(currentUser.id, normalizedPhone, selectedRole, {
+        full_name: name.trim(),
+        referral_code: referralCode,
+      });
+      if (!sync.success) {
+        setIsLoading(false);
+        setErrors({ referral: 'We could not save your profile. Please try again.' });
+        return;
+      }
+      login(selectedRole, name.trim() || 'User', normalizedPhone, currentUser, session);
+
+      setIsLoading(false);
+      if (selectedRole === 'helper') {
+        navigate('/helper');
+      } else {
+        navigate('/user');
+      }
+    } catch (err: any) {
+      setIsLoading(false);
+      setErrors({ referral: getFriendlyAuthErrorMessage(err) });
     }
-    const userData = { phone, password, name: finalName || 'Demo User' };
-    localStorage.setItem('qareeb_user', JSON.stringify(userData));
-    login('user', userData.name);
-    navigate('/user');
   };
 
   return (
@@ -219,9 +468,16 @@ export function LoginScreen() {
         <div className="animate-in fade-in slide-in-from-right-4 duration-300">
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-gray-900 mb-1">{isSignup ? 'Create Your Account' : 'Welcome Back!'}</h1>
-            <p className="text-gray-500 text-sm">{isSignup ? 'Sign up to get started with Qareeb' : 'Login to continue to your account'}</p>
+            <p className="text-gray-500 text-sm">{isSignup ? (selectedRole === 'helper' ? 'Sign up to offer your skills and earn on Qareeb' : 'Sign up to get trusted help with Qareeb') : 'Login to continue to your account'}</p>
           </div>
           
+          {errors.form && (
+            <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+              <p className="text-sm text-red-700 leading-relaxed">{errors.form}</p>
+            </div>
+          )}
+
           <form onSubmit={handleCredentialsSubmit} className="flex-1 flex flex-col space-y-5">
             {isSignup && (
               <Input 
@@ -234,7 +490,7 @@ export function LoginScreen() {
             )}
             
             <Input 
-              placeholder="Mobile Number" 
+              placeholder="Mobile Number (e.g. 03001234567)" 
               icon={<Phone className="w-5 h-5 text-gray-400" />}
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
@@ -262,7 +518,7 @@ export function LoginScreen() {
 
             {!isSignup && (
               <div className="flex justify-end">
-                <button type="button" className="text-sm font-medium text-brand-teal">Forgot Password?</button>
+                <button type="button" onClick={() => { setErrors({}); setAuthStep('reset-request'); }} className="text-sm font-medium text-brand-teal">Forgot Password?</button>
               </div>
             )}
 
@@ -304,7 +560,6 @@ export function LoginScreen() {
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-gray-900 mb-2">Verify Phone</h1>
             <p className="text-gray-500 text-sm">We've sent a code to <span className="font-semibold text-gray-900">{phone}</span></p>
-            <p className="text-xs text-brand-teal mt-2">Demo OTP: 123456</p>
           </div>
           <form onSubmit={handleOtpSubmit} className="flex flex-col space-y-6">
             <Input 
@@ -324,12 +579,96 @@ export function LoginScreen() {
         </div>
       )}
 
+      {(authStep === 'reset-request' || authStep === 'reset-verify') && errors.form && (
+        <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <p className="text-sm text-red-700 leading-relaxed">{errors.form}</p>
+        </div>
+      )}
+
+      {authStep === 'reset-request' && (
+        <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">Reset Password</h1>
+            <p className="text-gray-500 text-sm">Enter your account's mobile number and we'll send you a verification code.</p>
+          </div>
+          <form onSubmit={handleResetRequest} className="flex flex-col space-y-6">
+            <Input
+              placeholder="Mobile Number (e.g. 03001234567)"
+              icon={<Phone className="w-5 h-5 text-gray-400" />}
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              error={errors.phone}
+            />
+            <Button type="submit" className="w-full" isLoading={isLoading} disabled={isLoading}>
+              Send Code
+            </Button>
+            <button type="button" onClick={() => { setErrors({}); setAuthStep('credentials'); }} className="text-sm font-medium text-gray-500 hover:text-gray-900 pt-4">
+              ← Back to Login
+            </button>
+          </form>
+        </div>
+      )}
+
+      {authStep === 'reset-verify' && (
+        <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">Choose a New Password</h1>
+            <p className="text-gray-500 text-sm">If an account exists for <span className="font-semibold text-gray-900">{phone}</span>, we've sent it a 6-digit code.</p>
+          </div>
+          <form onSubmit={handleResetVerify} className="flex flex-col space-y-5">
+            {!resetVerified && (
+              <Input
+                placeholder="Enter 6-digit OTP"
+                value={otp}
+                onChange={(e) => setOtp(e.target.value)}
+                error={errors.otp}
+                maxLength={6}
+              />
+            )}
+            <div className="relative">
+              <Input
+                type={showPassword ? 'text' : 'password'}
+                placeholder="New Password"
+                icon={<Lock className="w-5 h-5 text-gray-400" />}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                error={errors.password}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 focus:outline-none"
+                style={{ marginTop: errors.password ? '-12px' : '0' }}
+              >
+                {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
+            </div>
+            <Input
+              type={showPassword ? 'text' : 'password'}
+              placeholder="Confirm New Password"
+              icon={<Lock className="w-5 h-5 text-gray-400" />}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              error={errors.confirm}
+            />
+            <Button type="submit" className="w-full" isLoading={isLoading} disabled={isLoading}>
+              Save New Password
+            </Button>
+            {!resetVerified && (
+              <button type="button" onClick={() => { setErrors({}); setAuthStep('reset-request'); }} className="text-sm font-medium text-gray-500 hover:text-gray-900 pt-2">
+                ← Didn't get a code? Send again
+              </button>
+            )}
+          </form>
+        </div>
+      )}
+
       {authStep === 'referral' && (
         <div className="flex-1 flex flex-col animate-in fade-in slide-in-from-right-4 duration-300">
           <div className="mb-8">
             <h1 className="text-2xl font-bold text-gray-900 mb-2">Have a Referral Code?</h1>
             <p className="text-gray-500 text-sm">Enter it below to get rewards, or skip if you don't have one.</p>
-            <p className="text-xs text-brand-teal mt-2">Demo Referral: QAREEB2026</p>
           </div>
           <form onSubmit={handleReferralSubmit} className="flex flex-col space-y-6">
             <Input 
@@ -339,7 +678,7 @@ export function LoginScreen() {
               error={errors.referral}
             />
             <div className="flex gap-4">
-              <Button type="button" variant="outline" className="flex-1" onClick={finishLogin} disabled={isLoading}>
+              <Button type="button" variant="outline" className="flex-1" onClick={() => completeSignup()} disabled={isLoading}>
                 Skip
               </Button>
               <Button type="submit" className="flex-1" isLoading={isLoading} disabled={isLoading}>
@@ -353,21 +692,131 @@ export function LoginScreen() {
     </div>
   );
 }
+
 export function CNICVerificationScreen() {
   const navigate = useNavigate();
+  const { user, role, setCnicStatus } = useAppStore();
   const [step, setStep] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const handleSubmit = () => {
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      setStep(4); // Success state
-    }, 1500);
+  const [frontFile, setFrontFile] = useState<File | null>(null);
+  const [backFile, setBackFile] = useState<File | null>(null);
+  const [selfieFile, setSelfieFile] = useState<File | null>(null);
+
+  const [frontPreview, setFrontPreview] = useState<string | null>(null);
+  const [backPreview, setBackPreview] = useState<string | null>(null);
+  const [selfiePreview, setSelfiePreview] = useState<string | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileHashes, setFileHashes] = useState<Record<number, string>>({});
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file after an error
+    if (!file) return;
+
+    setUploadError(null);
+    const problem = await validateCnicImage(file);
+    if (problem) {
+      setUploadError(problem);
+      return;
+    }
+
+    const hash = await hashFile(file);
+    const reusedStep = Object.entries(fileHashes).find(([s, h]) => Number(s) !== step && h === hash);
+    if (reusedStep) {
+      setUploadError('This is the same photo you used for another step. Please take a separate photo.');
+      return;
+    }
+    setFileHashes(prev => ({ ...prev, [step]: hash }));
+
+    const previewUrl = URL.createObjectURL(file);
+    if (step === 1) {
+      setFrontFile(file);
+      setFrontPreview(previewUrl);
+    } else if (step === 2) {
+      setBackFile(file);
+      setBackPreview(previewUrl);
+    } else if (step === 3) {
+      setSelfieFile(file);
+      setSelfiePreview(previewUrl);
+    }
   };
+
+  const handleTriggerUpload = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleSubmit = async () => {
+    setIsLoading(true);
+    setUploadError(null);
+
+    if (!frontFile || !backFile || !selfieFile) {
+      setUploadError('Please capture the CNIC front, back and a selfie before submitting.');
+      setIsLoading(false);
+      return;
+    }
+
+    // Storage RLS scopes uploads to the authenticated user's own folder
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    const userId = authUser?.id || user?.id;
+    if (!userId) {
+      setUploadError('Your session has expired. Please log in again to verify your CNIC.');
+      setIsLoading(false);
+      return;
+    }
+
+    // Upload to Supabase Storage bucket 'cnic-verifications'
+    try {
+      const uploads: [File, 'front' | 'back' | 'selfie'][] = [
+        [frontFile, 'front'],
+        [backFile, 'back'],
+        [selfieFile, 'selfie'],
+      ];
+      for (const [file, docType] of uploads) {
+        const result = await uploadCNICDocument(file, userId, docType);
+        if (!result.success) {
+          throw new Error(result.error || `Failed to upload CNIC ${docType}.`);
+        }
+      }
+
+      // Record verification status as 'pending' in Supabase user metadata
+      const { error: metaError } = await supabase.auth.updateUser({
+        data: {
+          cnic_status: 'pending',
+          cnic_submitted_at: new Date().toISOString(),
+        },
+      });
+      if (metaError) {
+        throw metaError;
+      }
+
+      // Update app store state to pending
+      setCnicStatus('pending');
+      setIsLoading(false);
+      setStep(4); // Display Verification Pending screen
+    } catch (err: any) {
+      console.error('Upload error:', err);
+      setUploadError(err?.message || 'Failed to upload your documents. Please try again.');
+      setIsLoading(false);
+    }
+  };
+
+  const currentPreview = step === 1 ? frontPreview : step === 2 ? backPreview : selfiePreview;
+  const currentFile = step === 1 ? frontFile : step === 2 ? backFile : selfieFile;
 
   return (
     <div className="flex flex-col h-full bg-white p-6">
+      {/* Hidden file input for capturing documents */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleFileChange} 
+        accept={CNIC_ALLOWED_TYPES.join(",")} 
+        className="hidden" 
+      />
+
       <div className="h-16 flex items-center mb-4">
          <button onClick={() => navigate(-1)} className="p-2 -ms-2">←</button>
          <h1 className="text-lg font-semibold mx-auto">CNIC Verification</h1>
@@ -393,13 +842,28 @@ export function CNICVerificationScreen() {
                 : 'Position your ID card within the frame. Ensure all text is readable.'}
             </p>
 
-            <div className="w-full aspect-[4/3] bg-gray-100 rounded-3xl border-2 border-dashed border-gray-300 flex flex-col items-center justify-center mb-6">
-               {step === 3 ? (
-                 <Camera className="w-12 h-12 text-gray-400 mb-4" />
+            {uploadError && (
+              <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-xl">
+                {uploadError}
+              </div>
+            )}
+
+            <div 
+              onClick={handleTriggerUpload}
+              className="w-full aspect-[4/3] bg-gray-100 rounded-3xl border-2 border-dashed border-gray-300 flex flex-col items-center justify-center mb-6 cursor-pointer overflow-hidden relative group hover:border-brand-teal transition-colors"
+            >
+               {currentPreview ? (
+                 <img src={currentPreview} alt="Document Preview" className="w-full h-full object-cover" />
                ) : (
-                 <Upload className="w-12 h-12 text-gray-400 mb-4" />
+                 <>
+                   {step === 3 ? (
+                     <Camera className="w-12 h-12 text-gray-400 mb-4 group-hover:scale-110 transition-transform" />
+                   ) : (
+                     <Upload className="w-12 h-12 text-gray-400 mb-4 group-hover:scale-110 transition-transform" />
+                   )}
+                   <span className="font-semibold text-gray-600">Tap to select or capture</span>
+                 </>
                )}
-               <span className="font-semibold text-gray-600">Tap to capture</span>
             </div>
 
             <div className="bg-brand-teal-light text-brand-teal p-4 rounded-2xl flex items-start text-sm">
@@ -413,6 +877,7 @@ export function CNICVerificationScreen() {
               className="w-full" 
               onClick={() => step < 3 ? setStep(step + 1) : handleSubmit()}
               isLoading={isLoading}
+              disabled={isLoading || !currentFile}
             >
               {step === 3 ? 'Submit for Verification' : 'Next Step'}
             </Button>
@@ -425,7 +890,7 @@ export function CNICVerificationScreen() {
            </div>
            <h2 className="text-2xl font-bold text-gray-900 mb-2">Verification Pending</h2>
            <p className="text-gray-500 mb-8 max-w-[250px]">Your documents have been submitted and are under review. This usually takes 5-10 minutes.</p>
-           <Button className="w-full max-w-[200px]" onClick={() => navigate('/user')}>Return Home</Button>
+           <Button className="w-full max-w-[200px]" onClick={() => navigate(role === 'helper' ? '/helper' : '/user')}>Return Home</Button>
         </div>
       )}
     </div>
