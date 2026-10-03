@@ -86,6 +86,18 @@ npm run build
 npm run preview
 ```
 
+### Tests
+
+```bash
+npm run lint                                        # TypeScript check
+deno test --allow-env supabase/functions/           # Edge Function unit tests (no network)
+node supabase/tests/run.mjs                         # database tests, see supabase/tests/README.md
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the type check, production build and Edge
+Function tests on every push and pull request. The database tests also run when the repository
+has the `SUPABASE_ACCESS_TOKEN` secret and the `SUPABASE_PROJECT_REF` variable.
+
 ## 📁 Project quality
 
 The repository is intended to remain production-oriented: reusable components, clear data boundaries, environment-based configuration, and documented security practices should be preferred over hard-coded secrets or one-off implementations.
