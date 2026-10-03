@@ -37,10 +37,12 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      # --node-modules-dir=none: the repository's package.json would otherwise make Deno look for
+      # npm: packages in node_modules, which this job does not install.
       - name: Type check
-        run: deno check --no-lock supabase/functions/*/index.ts supabase/functions/*/*_test.ts supabase/functions/*/adapters/*.ts
+        run: deno check --no-lock --node-modules-dir=none supabase/functions/*/index.ts supabase/functions/*/*_test.ts supabase/functions/*/adapters/*.ts
       - name: Unit tests (no network, no real SMS or payments)
-        run: deno test --no-lock --allow-env supabase/functions/
+        run: deno test --no-lock --node-modules-dir=none --allow-env supabase/functions/
 
   database:
     name: Database - RLS and integration tests (rolled back)

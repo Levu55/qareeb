@@ -90,7 +90,7 @@ npm run preview
 
 ```bash
 npm run lint                                        # TypeScript check
-deno test --allow-env supabase/functions/           # Edge Function unit tests (no network)
+deno test --node-modules-dir=none --allow-env supabase/functions/   # Edge Function unit tests (no network)
 node supabase/tests/run.mjs                         # database tests, see supabase/tests/README.md
 ```
 
